@@ -1,0 +1,127 @@
+{
+  "_comment": "A tiny hand-written corpus about the solar system. Twenty short documents, each a few sentences, deliberately written so that some queries are answerable by exact terms (good for BM25) and some by topical wording. The `queries` block is the end-to-end retrieval assertion set used by tests/test_engine.py.",
+  "documents": [
+    {
+      "doc_id": "mercury",
+      "title": "Mercury",
+      "text": "Mercury is the smallest planet in the solar system and the one closest to the Sun. It has almost no atmosphere, so heat escapes freely and surface temperatures swing from roughly 430 degrees Celsius in daylight to minus 180 degrees at night. Its cratered grey surface has changed little in billions of years. A year on Mercury lasts just 88 Earth days, the shortest orbit of any planet."
+    },
+    {
+      "doc_id": "venus",
+      "title": "Venus",
+      "text": "Venus is the hottest planet in the solar system, with a mean surface temperature near 465 degrees Celsius. Its thick atmosphere is more than ninety-six percent carbon dioxide and traps heat in a runaway greenhouse effect that never lets the surface cool. Clouds of sulfuric acid hide the ground from view, and the atmospheric pressure at the surface is about ninety times that of Earth. Venus also rotates backwards compared with most planets, so the Sun there rises in the west."
+    },
+    {
+      "doc_id": "earth",
+      "title": "Earth",
+      "text": "Earth is the third planet from the Sun and the only world known to support life. Liquid water covers about seventy-one percent of its surface, and a nitrogen and oxygen atmosphere shields the ground from harmful radiation. Plate tectonics continually recycle the crust, building mountains and opening ocean basins. A strong magnetic field generated in the molten iron core deflects charged particles from space."
+    },
+    {
+      "doc_id": "mars",
+      "title": "Mars",
+      "text": "Mars is the fourth planet from the Sun and is often called the red planet because iron oxide dust gives its surface a rusty colour. It hosts Olympus Mons, the tallest volcano in the solar system, and Valles Marineris, a canyon system stretching four thousand kilometres. Ancient riverbeds and mineral deposits show that liquid water once flowed there. Today the thin atmosphere is mostly carbon dioxide and the polar caps are frozen water and dry ice."
+    },
+    {
+      "doc_id": "jupiter",
+      "title": "Jupiter",
+      "text": "Jupiter is the largest planet in the solar system, more massive than all the other planets combined. The Great Red Spot is a giant storm wider than Earth that has raged in its southern hemisphere for at least three hundred and fifty years. Bands of ammonia clouds stripe the planet in cream and rust colours, driven by winds that exceed four hundred kilometres per hour. Jupiter has ninety-five confirmed moons and a magnetic field twenty thousand times stronger than Earth's."
+    },
+    {
+      "doc_id": "saturn",
+      "title": "Saturn",
+      "text": "Saturn is famous for its bright ring system, the most spectacular set of rings around any planet. The rings span almost two hundred and eighty thousand kilometres yet are often less than a kilometre thick, and they are made mostly of water ice particles ranging from grains of dust to boulders. Gaps such as the Cassini Division separate the major ring groups. Saturn itself is a gas giant so light that it would float in a sufficiently large ocean."
+    },
+    {
+      "doc_id": "uranus",
+      "title": "Uranus",
+      "text": "Uranus is an ice giant that orbits on its side, tilted about ninety-eight degrees from the plane of the solar system, so each pole spends forty-two years in continuous sunlight. Methane in the upper atmosphere absorbs red light and gives the planet its pale cyan tint. Its interior is a hot dense fluid of water, ammonia and methane ices. Voyager 2 remains the only spacecraft to have visited it."
+    },
+    {
+      "doc_id": "neptune",
+      "title": "Neptune",
+      "text": "Neptune is the outermost planet, orbiting roughly thirty times farther from the Sun than Earth does. It was found in 1846 through mathematics rather than observation, after irregularities in the orbit of Uranus pointed astronomers to where it must be. The fastest winds ever measured on a planet blow there, reaching two thousand kilometres per hour. Its largest moon, Triton, orbits backwards and is likely a captured object."
+    },
+    {
+      "doc_id": "pluto",
+      "title": "Pluto",
+      "text": "Pluto was classified as the ninth planet from its discovery in 1930 until 2006, when the International Astronomical Union reclassified it as a dwarf planet because it has not cleared its orbital neighbourhood. It is smaller than Earth's Moon and orbits in a tilted, elliptical path that sometimes brings it closer to the Sun than Neptune. The New Horizons flyby in 2015 revealed nitrogen ice plains and mountains of water ice."
+    },
+    {
+      "doc_id": "moon",
+      "title": "The Moon",
+      "text": "The Moon is Earth's only natural satellite and the fifth largest in the solar system. Its gravitational pull raises the ocean tides, and tidal locking means the same near side always faces Earth. The dark plains visible from the ground are maria, vast basins flooded by ancient lava flows. Twelve astronauts walked on its surface between 1969 and 1972 during the Apollo programme."
+    },
+    {
+      "doc_id": "europa",
+      "title": "Europa",
+      "text": "Europa is one of the four large Galilean moons of Jupiter and the smoothest solid body known. Beneath a crust of water ice roughly fifteen kilometres thick lies a subsurface saltwater ocean that may hold twice as much liquid as all of Earth's oceans combined. Tidal flexing from Jupiter keeps that ocean from freezing and cracks the icy shell into long reddish-brown lineae. It is considered one of the most promising places to look for life beyond Earth."
+    },
+    {
+      "doc_id": "titan",
+      "title": "Titan",
+      "text": "Titan is the largest moon of Saturn and the only moon with a substantial atmosphere, a dense nitrogen haze thicker than Earth's own. It is the only world besides Earth with stable liquid on its surface: lakes and seas of liquid methane and ethane collect near the poles and are fed by a hydrocarbon rain cycle. The Huygens probe landed there in 2005 and returned images of rounded pebbles shaped by flowing liquid."
+    },
+    {
+      "doc_id": "io",
+      "title": "Io",
+      "text": "Io is the most volcanically active body in the solar system, with more than four hundred active volcanoes throwing plumes of sulfur dioxide hundreds of kilometres into space. Tidal heating from the gravitational tug of war between Jupiter and the other Galilean moons melts its interior. Sulfur compounds paint the surface in yellows, oranges and reds, and there are no impact craters because lava resurfaces the moon constantly."
+    },
+    {
+      "doc_id": "asteroid_belt",
+      "title": "The asteroid belt",
+      "text": "The asteroid belt lies between the orbits of Mars and Jupiter and holds millions of rocky bodies left over from the formation of the solar system. Despite its reputation the belt is mostly empty space, and spacecraft pass through it without difficulty. Ceres, the largest object there, is round enough to count as a dwarf planet. Jupiter's gravity stirred the region so violently that the material never coalesced into a planet."
+    },
+    {
+      "doc_id": "kuiper_belt",
+      "title": "The Kuiper belt",
+      "text": "The Kuiper belt is a doughnut-shaped region of icy bodies beyond the orbit of Neptune, stretching from thirty to about fifty astronomical units from the Sun. It is the source of most short-period comets, which take less than two hundred years to circle the Sun. Pluto, Haumea, Makemake and Eris are among its largest known members. Unlike the asteroid belt it is dominated by frozen volatiles rather than rock and metal."
+    },
+    {
+      "doc_id": "oort_cloud",
+      "title": "The Oort cloud",
+      "text": "The Oort cloud is a hypothesised spherical shell of icy bodies surrounding the solar system at distances of up to one hundred thousand astronomical units. No object has ever been observed there directly; its existence is inferred from the orbits of long-period comets that fall inward from every direction. A passing star can nudge members loose and send them toward the inner solar system. It marks the outer edge of the Sun's gravitational influence."
+    },
+    {
+      "doc_id": "comets",
+      "title": "Comets",
+      "text": "A comet is a body of ice, dust and frozen gases that grows a glowing coma and a tail when it approaches the Sun and the ice sublimates. The tail always points away from the Sun regardless of the direction of travel, because it is pushed by radiation pressure. Halley's comet returns roughly every seventy-six years and was last visible in 1986. The Rosetta mission orbited comet 67P and placed a lander on its nucleus in 2014."
+    },
+    {
+      "doc_id": "sun",
+      "title": "The Sun",
+      "text": "The Sun is a G-type main sequence star holding about ninety-nine point eight percent of the mass of the solar system. In its core, hydrogen fuses into helium at fifteen million degrees, releasing the energy that reaches Earth eight minutes and twenty seconds later as light. It has burned this way for around four and a half billion years and has fuel for roughly five billion more. Its outer corona is far hotter than the visible surface, a puzzle still not fully explained."
+    },
+    {
+      "doc_id": "solar_wind",
+      "title": "The solar wind",
+      "text": "The solar wind is a continuous stream of charged particles, mostly electrons and protons, flowing outward from the Sun's corona at speeds between three hundred and eight hundred kilometres per second. Where it meets Earth's magnetic field it is deflected, and particles funnelled toward the poles excite atmospheric gases to produce the aurora. Coronal mass ejections can amplify the flow and disrupt satellites and power grids."
+    },
+    {
+      "doc_id": "exoplanets",
+      "title": "Exoplanets",
+      "text": "An exoplanet is a planet orbiting a star other than the Sun, and more than five thousand have been confirmed since the first detection around a sun-like star in 1995. Most were found by the transit method, which watches for the tiny dip in brightness as a planet crosses in front of its star. Others are inferred from the radial velocity wobble a planet induces in its host. The Kepler and TESS missions surveyed hundreds of thousands of stars to build this catalogue."
+    }
+  ],
+  "queries": [
+    {
+      "query": "which planet has a giant red storm bigger than Earth",
+      "expected_doc_id": "jupiter"
+    },
+    {
+      "query": "moon with lakes of liquid methane and a thick nitrogen atmosphere",
+      "expected_doc_id": "titan"
+    },
+    {
+      "query": "runaway greenhouse effect makes this the hottest planet",
+      "expected_doc_id": "venus"
+    },
+    {
+      "query": "subsurface saltwater ocean under an icy crust",
+      "expected_doc_id": "europa"
+    },
+    {
+      "query": "spectacular ring system made of water ice particles",
+      "expected_doc_id": "saturn"
+    }
+  ]
+}
