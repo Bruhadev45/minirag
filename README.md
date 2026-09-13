@@ -31,17 +31,20 @@ for hit in engine.search("which moon has an ocean under the ice?", mode="hybrid"
 
 | Module | Lines | What it does |
 | --- | ---: | --- |
-| `src/minirag/tokenize.py` | 68 | Lowercase, strip punctuation, optional stopword removal |
-| `src/minirag/chunker.py` | 130 | Sentence-aware sliding window with overlap |
-| `src/minirag/bm25.py` | 151 | Inverted index, IDF, TF saturation (`k1`), length norm (`b`) |
-| `src/minirag/vectors.py` | 149 | Hashed TF-IDF embedder + brute-force cosine index |
-| `src/minirag/fusion.py` | 71 | Weighted reciprocal rank fusion |
-| `src/minirag/engine.py` | 181 | `index()` / `search()`, three retrieval modes |
+| `src/minirag/tokenize.py` | 66 | Lowercase, strip punctuation, optional stopword removal |
+| `src/minirag/chunker.py` | 128 | Sentence-aware sliding window with overlap |
+| `src/minirag/bm25.py` | 147 | Inverted index, IDF, TF saturation (`k1`), length norm (`b`) |
+| `src/minirag/vectors.py` | 146 | Hashed TF-IDF embedder + brute-force cosine index |
+| `src/minirag/fusion.py` | 65 | Weighted reciprocal rank fusion |
+| `src/minirag/engine.py` | 175 | `index()` / `search()`, three retrieval modes |
+| `src/minirag/demo.py` | 44 | `python -m minirag.demo`, the runnable tour |
 | `src/minirag/__init__.py` | 27 | Public surface |
-| **Total** | **777** | Budget **800**, enforced by `tests/test_line_budget.py` |
+| **Total** | **798** | Budget **800**, enforced by `tests/test_line_budget.py` |
 
 Physical lines, docstrings and blanks included — the lines you actually scroll
-past. 99 tests cover it, and `ruff check src/ tests/` is clean.
+past. 108 tests cover it, and `ruff check src/ tests/` is clean. The budget test
+asserts `< 800`, so exactly one line of headroom is left: adding a feature now
+means trimming prose first, which is the trade the budget exists to force.
 
 ## Quickstart
 
@@ -50,7 +53,12 @@ python3.12 -m venv .venv
 .venv/bin/pip install -e ".[dev]"
 .venv/bin/pytest          # the full suite, including the line budget
 .venv/bin/ruff check src/ tests/
+.venv/bin/python -m minirag.demo   # six documents, two queries, three modes
 ```
+
+The demo is the 30-second version: it indexes six one-line documents and prints
+each mode's top three for two questions — one every mode answers, one every mode
+gets wrong. [Stage 5](docs/walkthrough/05-putting-it-together.md) unpacks why.
 
 Then run it against the test corpus — 20 short documents about the solar system,
 shipped in `tests/fixtures/corpus.json`:
@@ -92,7 +100,7 @@ Three search modes:
 
 ## The walkthrough
 
-Four staged documents that build the system up, in `docs/walkthrough/`:
+Five staged documents that build the system up, in `docs/walkthrough/`:
 
 1. [Chunking](docs/walkthrough/01-chunking.md) — why documents are the wrong unit,
    and why overlap is not optional.
@@ -102,6 +110,8 @@ Four staged documents that build the system up, in `docs/walkthrough/`:
    with arithmetic, and where a real model plugs in.
 4. [Fusion](docs/walkthrough/04-fusion.md) — why you cannot add the scores, and
    what to do instead.
+5. [Putting it together](docs/walkthrough/05-putting-it-together.md) — the
+   engine, the trade-offs it made, and where a real system diverges.
 
 ## Honest limitations
 
@@ -124,7 +134,9 @@ This is a teaching repository. It is correct, tested, and deliberately incomplet
 - **Search is exact, not approximate.** Brute-force cosine is O(n) per query, which
   beats ANN structures at this scale and loses badly beyond it.
 - **The tokeniser is naive.** No stemming, no lemmatisation, no subwords. `C++`
-  becomes `c`. Non-English text will tokenise but the stopword list won't apply.
+  becomes `c`, and a query for `volcanic` misses a document saying `volcanically`
+  — `python -m minirag.demo` shows exactly that. Non-English text will tokenise
+  but the stopword list won't apply.
 - **Sentence splitting is a regex.** `Dr. Sagan` splits into two sentences. A
   trained segmenter would not.
 - **No reranking.** A cross-encoder over the fused top-50 is the single highest-value

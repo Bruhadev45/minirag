@@ -1,9 +1,9 @@
 """Split documents into overlapping, sentence-aligned chunks.
 
 **Why chunk at all?** Retrieval returns whole units. If the unit is a
-40-page document the answer is buried in 39 pages of noise and the signal
-is diluted -- one matching sentence barely moves BM25's length-normalised
-score. If it is a single sentence you retrieve fragments too small to use.
+40-page document the answer is buried in 39 pages of noise -- one matching
+sentence barely moves BM25's length-normalised score -- and if it is a
+single sentence you retrieve fragments too small to use.
 
 **Why overlap?** (the part people skip and then regret) A hard boundary at
 token 120 will eventually land inside the one passage that answers a
@@ -17,16 +17,15 @@ query matches each half weakly instead of one chunk strongly -- and dense
 retrieval fares worse, because the second chunk's embedding has no idea
 what "that crust" refers to. Overlap makes every boundary fall *inside*
 some chunk, so no adjacent pair of sentences is separated in every chunk.
-The cost is duplication: a 120-token window with 30-token overlap stores
-~25% more text and can return two near-identical chunks, which is why
-:mod:`minirag.engine` keeps only the best chunk per document. Typical
-overlap is 10-25% of the window.
+The cost is duplication: a 120-token window with 30-token overlap (typical
+is 10-25%) stores ~25% more text and can return two near-identical chunks,
+which is why :mod:`minirag.engine` keeps only the best chunk per document.
 
 **Why sentence-aligned?** Cutting at a fixed token count severs clauses,
 which reads badly when the chunk is shown to a user or handed to a
 generator. Packing whole sentences up to a budget costs a few lines and
-makes every chunk quotable. The trade-off: a sentence longer than the
-budget becomes an oversized chunk of its own.
+makes every chunk quotable, at the price of oversized chunks whenever a
+sentence is longer than the budget.
 """
 
 from __future__ import annotations
@@ -67,13 +66,12 @@ def chunk_document(
     """Chunk one document with a sentence-aware sliding window.
 
     Token counts here are whitespace word counts, not tokeniser output:
-    chunk sizing only needs to be approximately right, and counting words
-    keeps this module independent of :mod:`minirag.tokenize`.
+    sizing only needs to be approximately right, and counting words keeps
+    this module independent of :mod:`minirag.tokenize`.
 
     ``max_tokens`` is a soft bound -- a window always holds at least one
     sentence. ``overlap_tokens`` is the trailing context repeated at the
-    start of the next chunk; ``0`` disables overlap. Blank input yields
-    ``()``.
+    start of the next chunk; ``0`` disables it. Blank input yields ``()``.
 
     Raises:
         ValueError: If ``max_tokens < 1``, or ``overlap_tokens`` is negative

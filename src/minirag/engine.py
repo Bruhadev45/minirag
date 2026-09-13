@@ -1,16 +1,11 @@
 """The engine: chunk, index twice, search three ways.
 
-    documents --chunk--> chunks --tokenize--> tokens --+--> BM25 index
-                                                       +--> dense index
-
-    query --tokenize--> +--> BM25 search --+
-                        +--> dense search -+--> RRF --> hits
-
-``"bm25"`` is exact-term matching: unbeatable on names, codes and rare
-words, blind to paraphrase. ``"dense"`` matches on vector geometry: robust
-to wording (with a real model), prone to returning something topically
-close but factually wrong. ``"hybrid"`` fuses their *rankings* -- see
-:mod:`minirag.fusion` for why ranks and not scores.
+``"bm25"`` matches exact terms -- unbeatable on names, codes and rare
+words, blind to paraphrase. ``"dense"`` matches vector geometry: robust to
+wording (with a real model), prone to something topically close but
+factually wrong. ``"hybrid"`` fuses their *rankings*; :mod:`minirag.fusion`
+explains why ranks and not scores. The pipeline diagram is in the README,
+and ``python -m minirag.demo`` runs all three modes side by side.
 
 Retrieval runs over chunks, but results collapse to one hit per document
 (its best chunk) -- otherwise a long, heavily overlapped document fills the
@@ -34,7 +29,7 @@ _MODES: tuple[SearchMode, ...] = ("bm25", "dense", "hybrid")
 
 @dataclass(frozen=True, slots=True)
 class Document:
-    """An input document. ``metadata`` is carried through onto every hit."""
+    """An input document. ``metadata`` is carried onto every hit."""
 
     doc_id: str
     text: str
@@ -44,8 +39,8 @@ class Document:
 @dataclass(frozen=True, slots=True)
 class Hit:
     """One search result. ``score`` is mode-dependent and NOT comparable
-    across modes -- BM25 is unbounded, dense is a cosine in ``[0, 1]``,
-    hybrid is an RRF score near ``1/k``. Order within one result set only.
+    across modes -- BM25 is unbounded, dense a cosine in ``[0, 1]``, hybrid
+    an RRF score near ``1/k``. It orders one result set, nothing more.
     """
 
     doc_id: str
@@ -81,9 +76,9 @@ class MiniRAG:
     ) -> None:
         """Configure chunking, embedding width and fusion.
 
-        ``weights`` takes keys ``"bm25"`` and ``"dense"``, equal by default.
-        Raise ``"bm25"`` when the corpus is full of identifiers; raise
-        ``"dense"`` when queries are paraphrases.
+        ``weights`` takes keys ``"bm25"`` and ``"dense"``, equal by default;
+        raise ``"bm25"`` for a corpus full of identifiers, ``"dense"`` when
+        queries are paraphrases.
         """
         self._window = {"max_tokens": max_tokens, "overlap_tokens": overlap_tokens}
         self._dim = dim
@@ -99,12 +94,12 @@ class MiniRAG:
     def index(self, documents: Sequence[Document]) -> None:
         """Chunk, tokenise and build both indexes, replacing any prior index.
 
-        The caller's sequence is read but never modified and nothing mutable
-        is retained -- metadata is copied.
+        The caller's sequence is read but never modified and nothing
+        mutable is retained: metadata is copied.
 
         Raises:
-            ValueError: On a duplicate ``doc_id``, which would silently make
-                results ambiguous later.
+            ValueError: On a duplicate ``doc_id``, which would silently
+                make results ambiguous later.
         """
         chunks: list[Chunk] = []
         metadata: dict[str, Mapping[str, str]] = {}
@@ -144,8 +139,7 @@ class MiniRAG:
         query_tokens = tokenize(query)
         if not query_tokens:
             return ()
-        # Over-fetch: fusion needs depth, and collapsing to one chunk per
-        # document shrinks the list again.
+        # Over-fetch: fusion needs depth, and collapsing shrinks the list.
         ranked = self._rank(state, query_tokens, mode, depth=max(top_k * 4, 20))
         return self._collapse(state, ranked, mode, top_k)
 

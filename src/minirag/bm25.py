@@ -9,17 +9,16 @@ For a query Q and document D, BM25 sums one contribution per query term::
                    f(q, D) + k1 * (1 - b + b * |D| / avgdl)
 
 ``f(q, D)`` is the raw count of ``q`` in ``D``, ``|D|`` the document length
-in tokens, ``avgdl`` the corpus average. Three ideas, multiplied:
+in tokens and ``avgdl`` the corpus average. Three ideas, multiplied:
 
 **IDF -- how surprising is this term?** ``ln(1 + (N - n(q) + 0.5) /
-(n(q) + 0.5))``, with ``n(q)`` documents containing ``q`` out of ``N``. A
-term in every document scores near 0, a term in one document scores high:
-this makes "the" free and "perihelion" expensive. The ``1 +`` wrapper keeps
-it non-negative, unlike the textbook form -- without it a term in over half
-the corpus scores *negatively*, so deleting a word could improve rank.
+(n(q) + 0.5))``, with ``n(q)`` documents containing ``q`` out of ``N``, so
+"the" is free and "perihelion" expensive. The ``1 +`` wrapper keeps it
+non-negative: the textbook form scores a term in over half the corpus
+*negatively*, so deleting a word could improve a document's rank.
 
 **TF saturation (k1) -- how much does repetition help?** A document saying
-"Mars" 50 times is not 50x more about Mars than one saying it once. The
+"Mars" 50 times is not 50x more about Mars than one saying it once, so the
 ratio is a hyperbola in ``f``: steep from 0, then flattening toward a
 ceiling of ``k1 + 1``, with ``k1`` setting the knee. ``k1=0`` makes it
 binary, ``k1 -> inf`` linear; ``1.5`` is our default.
@@ -30,9 +29,8 @@ has more chances to contain any term, so ``|D| / avgdl`` divides it down.
 is the default. It sits in the *denominator* beside ``k1``, so a long
 document does not merely lose score -- it also saturates more slowly.
 
-The inverted index makes this fast: scoring only needs documents holding at
-least one query term, and a ``term -> [(doc, count), ...]`` map jumps
-straight to them.
+The inverted index makes this fast: a ``term -> [(doc, count), ...]`` map
+jumps straight to the only documents that can score above zero.
 """
 
 from __future__ import annotations
@@ -47,9 +45,9 @@ from dataclasses import dataclass
 class BM25Index:
     """An immutable inverted index plus the statistics BM25 needs.
 
-    ``postings`` maps ``term -> ((doc_index, term_frequency), ...)``;
-    ``doc_lengths`` is positionally aligned with the corpus passed to
-    :func:`build_index`; ``avg_doc_length`` is ``avgdl`` above.
+    ``postings`` maps ``term -> ((doc_index, term_frequency), ...)``,
+    ``doc_lengths`` is aligned with the corpus passed to :func:`build_index`
+    and ``avg_doc_length`` is ``avgdl`` above.
     """
 
     postings: Mapping[str, tuple[tuple[int, int], ...]]
@@ -67,9 +65,8 @@ class BM25Index:
 def build_index(corpus: Sequence[Sequence[str]], *, k1: float = 1.5, b: float = 0.75) -> BM25Index:
     """Build an inverted index over already-tokenised documents.
 
-    ``corpus`` is one token sequence per document; it is neither mutated
-    nor retained. An empty corpus is legal and yields an index that scores
-    everything as nothing.
+    ``corpus`` is one token sequence per document, neither mutated nor
+    retained. An empty corpus is legal: it scores everything as nothing.
 
     Raises:
         ValueError: If ``k1 < 0`` or ``b`` is outside ``[0, 1]``.
@@ -114,10 +111,10 @@ def score_query(index: BM25Index, query_tokens: Sequence[str]) -> tuple[float, .
     """Score every document against ``query_tokens``.
 
     Walks one postings list per *distinct* query term, so cost scales with
-    the number of matching documents, not corpus size. Repeated query terms
-    count once -- BM25 has no query-side term frequency component. Returns
-    one score per document, positionally aligned with the corpus; a
-    document sharing no term with the query scores exactly ``0.0``.
+    the number of matching documents, not corpus size; repeated query terms
+    count once, as BM25 has no query-side term frequency component. Returns
+    one score per document, aligned with the corpus, and a document sharing
+    no term with the query scores exactly ``0.0``.
     """
     scores = [0.0] * index.n_docs
     if index.n_docs == 0 or index.avg_doc_length == 0.0:
@@ -142,9 +139,8 @@ def search(
     """Return the ``top_k`` ``(doc_index, score)`` pairs, best first.
 
     Zero-scoring documents are dropped: in a lexical system a score of 0
-    means "shares no term with the query", not a weak match but no match at
-    all. Ties break on ascending document index, so results are
-    deterministic across runs.
+    means "shares no term with the query" -- no match at all, not a weak
+    one. Ties break on ascending document index, deterministically.
     """
     scored = [(i, s) for i, s in enumerate(score_query(index, query_tokens)) if s > 0.0]
     scored.sort(key=lambda pair: (-pair[1], pair[0]))

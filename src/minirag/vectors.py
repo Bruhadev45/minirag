@@ -1,35 +1,32 @@
 """Dense vectors without a model download, plus brute-force cosine search.
 
-Dense retrieval has two halves that people usually conflate::
-
-    text -> vector          (the embedder -- a model, in the real world)
-    vector -> neighbours    (the index -- an ANN structure, in the real world)
-
-minirag implements both in numpy so the repo runs offline, then marks the
-seam where you would swap in something better.
+Dense retrieval has two halves that people usually conflate: ``text ->
+vector`` (the embedder -- a model, in the real world) and ``vector ->
+neighbours`` (the index -- an ANN structure). minirag implements both in
+numpy so the repo runs offline, then marks the seam where you would swap in
+something better.
 
 **The embedder** builds a vector space arithmetically instead of learning
 one. Hash each term to a column with ``blake2b`` -- not Python's ``hash()``,
 which is salted per process, so vectors would differ between runs. Any term
 maps into ``dim`` columns, so the vocabulary grows forever without resizing
 anything; that is the "hashing trick", and the price is collisions (rare at
-``dim=4096``, but see the caveat below). Weight each column by ``tf * idf``
--- rare terms carry the meaning, as in BM25 -- then L2-normalise so cosine
-is a plain dot product. The result is genuinely a dense space, but still
-*lexical underneath*: "car" and "automobile" hash to unrelated columns, so
-it cannot match synonyms, which is the selling point of learned embeddings.
-Collisions also mean an out-of-vocabulary query still scores above zero
-against something. It is a stand-in for testing the dense path.
+``dim=4096``). Weight each column by ``tf * idf`` -- rare terms carry the
+meaning, as in BM25 -- then L2-normalise so cosine is a plain dot product.
+That is genuinely a dense space but still *lexical underneath*: "car" and
+"automobile" hash to unrelated columns, so it cannot match synonyms, the
+selling point of learned embeddings. Collisions also mean an
+out-of-vocabulary query still scores above zero against something.
 
-**The seam** is :class:`Embedder`, a ``Protocol`` with one method. Anything
-returning an ``(n, dim)`` array of L2-normalised rows works:
-sentence-transformers, an embeddings API call, a local ONNX model.
+**The seam** is :class:`Embedder`, a ``Protocol`` with one method: anything
+returning an ``(n, dim)`` array of L2-normalised rows works, be it
+sentence-transformers, an embeddings API call or a local ONNX model.
 :class:`DenseIndex` and :class:`~minirag.engine.MiniRAG` never name
 ``HashedTfidfEmbedder``; they only need the protocol.
 
 **The index is brute force on purpose.** ``matrix @ query`` compares
-against every vector: exact, three lines, and on a few thousand chunks
-faster than any approximate structure once you count build time. HNSW/IVF
+against every vector: exact, three lines, and faster on a few thousand
+chunks than any approximate structure once you count build time. HNSW/IVF
 only win in the millions, by *trading away recall*.
 """
 
@@ -102,9 +99,9 @@ class HashedTfidfEmbedder:
         """Embed token sequences as L2-normalised rows.
 
         Sub-linear term frequency (``1 + log f``) is used for the same
-        reason BM25 has ``k1``: the tenth occurrence of a word says far
-        less than the second. Empty or all-unknown documents produce an
-        all-zero row, which is a valid vector with cosine 0 to everything.
+        reason BM25 has ``k1``: the tenth occurrence of a word says far less
+        than the second. Empty documents produce an all-zero row, a valid
+        vector with cosine 0 to everything.
         """
         matrix = np.zeros((len(documents), self.dim), dtype=np.float64)
         for row, tokens in enumerate(documents):
@@ -130,7 +127,7 @@ class DenseIndex:
         """Return the ``top_k`` ``(row_index, cosine)`` pairs, best first.
 
         Because every row and the query are unit-norm, the whole search is
-        one matrix-vector product. ``argpartition`` finds the top k in
+        one matrix-vector product; ``argpartition`` then finds the top k in
         O(n) and only the survivors get sorted.
 
         Raises:

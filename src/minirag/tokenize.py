@@ -13,23 +13,21 @@ stripping** turns ``planet's`` into ``planet`` -- cheap, occasionally wrong
 retrieves badly. **Stopword removal** drops high-frequency function words;
 BM25 already discounts them via IDF, so this is mostly an index-size
 optimisation, but it does change behaviour on short queries like "the who",
-which becomes empty. That is why removal is optional and why
-:func:`tokenize` never returns ``None`` -- an empty tuple is a legitimate
-answer callers must handle.
+which becomes empty. That is why removal is optional, and why an empty
+tuple is a legitimate answer that callers must handle.
 
-A production system would add stemming and subword handling. Both are
-deliberately absent: they cost a dependency or a hundred lines of
-Porter-stemmer rules, and neither teaches you anything new.
+A production system would add stemming and subword handling; both cost a
+dependency or a hundred lines of Porter-stemmer rules and teach nothing
+new, so ``python -m minirag.demo`` shows what their absence costs instead.
 """
 
 from __future__ import annotations
 
 import re
 
-#: Words dropped when ``remove_stopwords=True``. Kept small and inline on
-#: purpose -- a 600-word list would be more "correct" and would make this
-#: module unreadable, the wrong trade for a repo you read top to bottom.
-# A readable block beats a 114-element list literal, so SIM905 is waived.
+#: Words dropped when ``remove_stopwords=True``. Small and inline on
+#: purpose: a 600-word list would be more "correct" and less readable,
+#: the wrong trade here. A block beats a list literal, so SIM905 is waived.
 STOPWORDS: frozenset[str] = frozenset(
     """
     a about above after again against all am an and any are as at be because been before
@@ -50,9 +48,9 @@ _TOKEN_RE = re.compile(r"[a-z0-9]+(?:'[a-z]+)?")
 def tokenize(text: str, *, remove_stopwords: bool = True) -> tuple[str, ...]:
     """Normalise ``text`` into a tuple of lowercase tokens, in order.
 
-    ``""`` is valid and yields ``()``. Set ``remove_stopwords=False`` when
-    you care about phrase-ish queries ("to be or not to be"). Duplicates are
-    kept -- term frequency is the basis of BM25, so this must not dedupe.
+    ``""`` is valid and yields ``()``. Set ``remove_stopwords=False`` for
+    phrase-ish queries ("to be or not to be"). Duplicates are kept -- term
+    frequency is the basis of BM25, so this must not dedupe.
 
     Raises:
         TypeError: If ``text`` is not a ``str``. Failing loudly is much

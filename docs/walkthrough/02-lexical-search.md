@@ -1,7 +1,7 @@
 # 2. Lexical search: the inverted index and BM25
 
-> Modules: [`src/minirag/tokenize.py`](../../src/minirag/tokenize.py) (68 lines),
-> [`src/minirag/bm25.py`](../../src/minirag/bm25.py) (151 lines)
+> Modules: [`src/minirag/tokenize.py`](../../src/minirag/tokenize.py) (66 lines),
+> [`src/minirag/bm25.py`](../../src/minirag/bm25.py) (147 lines)
 
 We have chunks. Now we need to score them against a query. Fifty years on, the
 answer is still BM25 — and unlike most of modern retrieval, you can hold all of it

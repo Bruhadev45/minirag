@@ -1,6 +1,6 @@
 # 3. Dense search: vectors without a model
 
-> Module: [`src/minirag/vectors.py`](../../src/minirag/vectors.py) — 149 lines
+> Module: [`src/minirag/vectors.py`](../../src/minirag/vectors.py) — 146 lines
 
 Dense retrieval is usually presented as one thing. It is two, and separating them
 is the most useful idea in this stage:

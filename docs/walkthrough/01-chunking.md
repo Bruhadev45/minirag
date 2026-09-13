@@ -1,6 +1,6 @@
 # 1. Chunking: choosing the unit of retrieval
 
-> Module: [`src/minirag/chunker.py`](../../src/minirag/chunker.py) — 130 lines
+> Module: [`src/minirag/chunker.py`](../../src/minirag/chunker.py) — 128 lines
 
 Before you can search anything, you have to decide *what a result is*. This is the
 first design decision in a RAG system and the one people spend the least time on,
