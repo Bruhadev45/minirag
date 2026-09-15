@@ -32,6 +32,9 @@ packages = ["src/minirag"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+# `extras/` lives outside the package (and outside the line budget), so put
+# the repo root on the path for tests/test_hnsw.py.
+pythonpath = ["."]
 
 [tool.ruff]
 line-length = 100
@@ -40,3 +43,7 @@ src = ["src", "tests"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+
+[tool.ruff.lint.isort]
+# `extras/` is ours too, it just lives outside the package.
+known-first-party = ["extras", "minirag"]

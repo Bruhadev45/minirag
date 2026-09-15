@@ -42,7 +42,7 @@ for hit in engine.search("which moon has an ocean under the ice?", mode="hybrid"
 | **Total** | **798** | Budget **800**, enforced by `tests/test_line_budget.py` |
 
 Physical lines, docstrings and blanks included — the lines you actually scroll
-past. 108 tests cover it, and `ruff check src/ tests/` is clean. The budget test
+past. 129 tests cover it, and `ruff check src/ tests/` is clean. The budget test
 asserts `< 800`, so exactly one line of headroom is left: adding a feature now
 means trimming prose first, which is the trade the budget exists to force.
 
@@ -113,6 +113,41 @@ Five staged documents that build the system up, in `docs/walkthrough/`:
 5. [Putting it together](docs/walkthrough/05-putting-it-together.md) — the
    engine, the trade-offs it made, and where a real system diverges.
 
+## Extras
+
+Code that is worth reading but does not belong inside the budget lives in
+`extras/` — beyond the 800 lines, same spirit: no new dependencies, every
+parameter explained, every claim measured.
+
+- **[`extras/hnsw.py`](extras/hnsw.py)** — a minimal HNSW index, the approximate
+  neighbour search this repo argues you do not need yet. It is here so the
+  argument stays checkable: same input matrix and same return shape as
+  `DenseIndex`, so `tests/test_hnsw.py` can put the two side by side and report
+  what the graph loses.
+
+Recall@10 against exact brute-force search, measured by that test file
+(`m` edges per node, `ef` beam width):
+
+| Vectors | `m` | `ef` | recall@10 |
+| --- | ---: | ---: | ---: |
+| 40 fixture chunks, 25 queries | 8 | 16 | 1.0000 |
+| 40 fixture chunks, 25 queries | 8 | 32 | 1.0000 |
+| 800 random unit vectors (64-d), 60 queries | 8 | 16 | 0.6700 |
+| 800 random unit vectors (64-d), 60 queries | 8 | 32 | 0.8250 |
+| 800 random unit vectors (64-d), 60 queries | 8 | 64 | 0.9467 |
+| 800 random unit vectors (64-d), 60 queries | 16 | 64 | 0.9983 |
+
+Read that top to bottom: on the fixture corpus the graph loses nothing, because
+40 chunks is nowhere near where ANN pays — which is exactly why the shipped
+engine does not use it. On unclustered Gaussian vectors, the hardest case for a
+navigable graph, the default settings silently drop a third of the true
+neighbours, and you buy them back with `ef` at query time or `m` at build time.
+That silence is the point: an ANN index never reports the neighbours it missed.
+
+```bash
+.venv/bin/pytest tests/test_hnsw.py -q
+```
+
 ## Honest limitations
 
 This is a teaching repository. It is correct, tested, and deliberately incomplete.
@@ -132,7 +167,9 @@ This is a teaching repository. It is correct, tested, and deliberately incomplet
   incremental updates. Re-index to change anything. Expect it to be comfortable up
   to roughly 10<sup>4</sup>–10<sup>5</sup> chunks on a laptop, then not.
 - **Search is exact, not approximate.** Brute-force cosine is O(n) per query, which
-  beats ANN structures at this scale and loses badly beyond it.
+  beats ANN structures at this scale and loses badly beyond it. The measured
+  version of that claim is [`extras/hnsw.py`](extras/hnsw.py) and the recall
+  table above.
 - **The tokeniser is naive.** No stemming, no lemmatisation, no subwords. `C++`
   becomes `c`, and a query for `volcanic` misses a document saying `volcanically`
   — `python -m minirag.demo` shows exactly that. Non-English text will tokenise
