@@ -77,10 +77,9 @@ class HashedTfidfEmbedder:
     def fit(cls, corpus: Sequence[Sequence[str]], *, dim: int = DEFAULT_DIM) -> HashedTfidfEmbedder:
         """Learn column IDF weights from a tokenised corpus.
 
-        Uses the smoothed form ``ln((N + 1) / (df + 1)) + 1``, which is
-        always positive -- unlike BM25's IDF we are building a vector to be
-        normalised, and negative weights would flip a term's direction in
-        the space rather than merely discount it.
+        Uses the smoothed form ``ln((N + 1) / (df + 1)) + 1``, always
+        positive: unlike BM25 we build a vector to normalise, and a negative
+        weight would flip a term's direction rather than merely discount it.
 
         Raises:
             ValueError: If ``dim < 1``.

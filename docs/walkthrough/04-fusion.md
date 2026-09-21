@@ -1,7 +1,7 @@
 # 4. Fusion: combining rankings you cannot compare
 
 > Modules: [`src/minirag/fusion.py`](../../src/minirag/fusion.py) (65 lines),
-> [`src/minirag/engine.py`](../../src/minirag/engine.py) (175 lines)
+> [`src/minirag/engine.py`](../../src/minirag/engine.py) (183 lines)
 
 Two retrievers, two ranked lists, one answer required. This stage is short, and
 the interesting part is why the obvious approaches fail.

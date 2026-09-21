@@ -25,9 +25,8 @@ from __future__ import annotations
 
 import re
 
-#: Words dropped when ``remove_stopwords=True``. Small and inline on
-#: purpose: a 600-word list would be more "correct" and less readable,
-#: the wrong trade here. A block beats a list literal, so SIM905 is waived.
+#: Dropped when ``remove_stopwords=True``. Small and inline on purpose; a
+#: block reads better than a list literal, so SIM905 is waived.
 STOPWORDS: frozenset[str] = frozenset(
     """
     a about above after again against all am an and any are as at be because been before
@@ -63,4 +62,3 @@ def tokenize(text: str, *, remove_stopwords: bool = True) -> tuple[str, ...]:
     if remove_stopwords:
         return tuple(t for t in tokens if t and t not in STOPWORDS)
     return tuple(t for t in tokens if t)
-

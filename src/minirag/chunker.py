@@ -33,9 +33,8 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-# Split after . ! or ? when followed by whitespace and a likely sentence
-# start. Not linguistically complete ("Dr. Sagan" would split); a real
-# system uses a trained segmenter. One line, and good enough for prose.
+# Split after . ! or ? before whitespace and a likely sentence start. Naive
+# ("Dr. Sagan" splits); a real system uses a trained segmenter.
 _SENTENCE_END = re.compile(r"(?<=[.!?])\s+(?=[A-Z0-9\"'(])")
 
 
@@ -65,9 +64,8 @@ def chunk_document(
 ) -> tuple[Chunk, ...]:
     """Chunk one document with a sentence-aware sliding window.
 
-    Token counts here are whitespace word counts, not tokeniser output:
-    sizing only needs to be approximately right, and counting words keeps
-    this module independent of :mod:`minirag.tokenize`.
+    Token counts are whitespace word counts, not tokeniser output: sizing
+    need only be roughly right, and it keeps :mod:`minirag.tokenize` out.
 
     ``max_tokens`` is a soft bound -- a window always holds at least one
     sentence. ``overlap_tokens`` is the trailing context repeated at the
@@ -75,9 +73,8 @@ def chunk_document(
 
     Raises:
         ValueError: If ``max_tokens < 1``, or ``overlap_tokens`` is negative
-            or not smaller than ``max_tokens`` -- equal would mean the
-            window never advances, an infinite loop caught here rather than
-            at 3am.
+            or not smaller than ``max_tokens`` -- equal would never advance
+            the window, an infinite loop caught here rather than at 3am.
     """
     if max_tokens < 1:
         raise ValueError("max_tokens must be >= 1")

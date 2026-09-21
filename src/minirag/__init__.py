@@ -4,8 +4,7 @@ Read the modules in this order; each one stands alone::
 
     tokenize -> chunker -> bm25 -> vectors -> fusion -> engine
 
-See ``README.md`` for a quickstart and ``docs/walkthrough/`` for the same
-system built up in four stages.
+See ``README.md`` and the five-stage walkthrough in ``docs/walkthrough/``.
 """
 
 from minirag.chunker import Chunk, chunk_corpus, chunk_document

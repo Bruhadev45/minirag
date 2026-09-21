@@ -4,8 +4,7 @@
 words, blind to paraphrase. ``"dense"`` matches vector geometry: robust to
 wording (with a real model), prone to something topically close but
 factually wrong. ``"hybrid"`` fuses their *rankings*; :mod:`minirag.fusion`
-explains why ranks and not scores. The pipeline diagram is in the README,
-and ``python -m minirag.demo`` runs all three modes side by side.
+explains why ranks and not scores; ``python -m minirag.demo`` runs all three.
 
 Retrieval runs over chunks, but results collapse to one hit per document
 (its best chunk) -- otherwise a long, heavily overlapped document fills the
@@ -29,7 +28,7 @@ _MODES: tuple[SearchMode, ...] = ("bm25", "dense", "hybrid")
 
 @dataclass(frozen=True, slots=True)
 class Document:
-    """An input document. ``metadata`` is carried onto every hit."""
+    """An input document. ``metadata`` rides on every hit; ``where`` filters it."""
 
     doc_id: str
     text: str
@@ -76,9 +75,8 @@ class MiniRAG:
     ) -> None:
         """Configure chunking, embedding width and fusion.
 
-        ``weights`` takes keys ``"bm25"`` and ``"dense"``, equal by default;
-        raise ``"bm25"`` for a corpus full of identifiers, ``"dense"`` when
-        queries are paraphrases.
+        ``weights`` (keys ``"bm25"``, ``"dense"``, equal by default): raise
+        ``"bm25"`` for identifier-heavy corpora, ``"dense"`` for paraphrases.
         """
         self._window = {"max_tokens": max_tokens, "overlap_tokens": overlap_tokens}
         self._dim = dim
@@ -94,12 +92,10 @@ class MiniRAG:
     def index(self, documents: Sequence[Document]) -> None:
         """Chunk, tokenise and build both indexes, replacing any prior index.
 
-        The caller's sequence is read but never modified and nothing
-        mutable is retained: metadata is copied.
+        Nothing the caller passed is modified or retained: metadata is copied.
 
         Raises:
-            ValueError: On a duplicate ``doc_id``, which would silently
-                make results ambiguous later.
+            ValueError: On a duplicate ``doc_id`` (results would be ambiguous).
         """
         chunks: list[Chunk] = []
         metadata: dict[str, Mapping[str, str]] = {}
@@ -119,9 +115,14 @@ class MiniRAG:
             dense=DenseIndex.build(embedder, tokens),
         )
 
-    def search(self, query: str, *, top_k: int = 5, mode: SearchMode = "hybrid") -> tuple[Hit, ...]:
+    def search(
+        self, query: str, *, top_k: int = 5, mode: SearchMode = "hybrid",
+        where: Mapping[str, str] | None = None,
+    ) -> tuple[Hit, ...]:
         """Retrieve the best chunks for ``query``, at most one per document.
 
+        ``where={"field": value}`` keeps documents whose metadata has every
+        pair, *before* ranking: the rest never take a rank or a ``top_k`` slot.
         Empty or all-stopword queries return ``()`` rather than raising.
 
         Raises:
@@ -140,17 +141,24 @@ class MiniRAG:
         if not query_tokens:
             return ()
         # Over-fetch: fusion needs depth, and collapsing shrinks the list.
-        ranked = self._rank(state, query_tokens, mode, depth=max(top_k * 4, 20))
+        ranked = self._rank(state, query_tokens, mode, max(top_k * 4, 20), dict(where or {}))
         return self._collapse(state, ranked, mode, top_k)
 
     def _rank(
-        self, state: _State, query_tokens: tuple[str, ...], mode: SearchMode, *, depth: int
+        self, state: _State, query_tokens: tuple[str, ...], mode: SearchMode, depth: int,
+        where: Mapping[str, str],
     ) -> Sequence[tuple[int, float]]:
         """Run the requested retriever(s), returning ``(chunk_index, score)``."""
-        lexical = bm25.search(state.lexical, query_tokens, top_k=depth)
+        wide = len(state.chunks) if where else depth  # filtering needs the full list
+        ok = {d for d, m in state.metadata.items() if where.items() <= m.items()}  # subset test
+
+        def keep(pairs: Sequence[tuple[int, float]]) -> list[tuple[int, float]]:
+            return [p for p in pairs if state.chunks[p[0]].doc_id in ok][:depth]
+
+        lexical = keep(bm25.search(state.lexical, query_tokens, top_k=wide))
         if mode == "bm25":
             return lexical
-        dense = state.dense.search(state.embedder.encode([query_tokens]), top_k=depth)
+        dense = keep(state.dense.search(state.embedder.encode([query_tokens]), top_k=wide))
         if mode == "dense":
             return dense
         ranks = {"bm25": [i for i, _ in lexical], "dense": [i for i, _ in dense]}

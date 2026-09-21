@@ -1,6 +1,6 @@
 # 5. Putting it together: the engine, and where it stops
 
-> Modules: [`src/minirag/engine.py`](../../src/minirag/engine.py) (175 lines),
+> Modules: [`src/minirag/engine.py`](../../src/minirag/engine.py) (183 lines),
 > [`src/minirag/demo.py`](../../src/minirag/demo.py) (44 lines)
 
 Four stages built the parts: chunks, a lexical index, a vector index, and a way to
@@ -72,6 +72,16 @@ details earn their keep, both covered in [stage 4](04-fusion.md): the engine
 needs depth to reconcile, and it **collapses to one hit per document**, because
 overlapping chunks would otherwise fill the top-5 with near-identical text.
 
+**Metadata filtering runs before ranking.** `search(query, where={"kind": "moon"})`
+keeps only documents whose metadata holds every pair, and it drops the rest
+*before* each retriever's list is cut to depth and fused. Filtering afterwards
+would be one line shorter and quietly wrong: if 30 non-matching documents
+outrank the one you want, a 20-deep over-fetch never sees it, and you get `()`
+for a query that has an answer. `tests/test_where.py` builds exactly that corpus.
+The filter narrows candidates, not statistics — IDF is still computed over the
+whole corpus, so a surviving hit scores the same as it would unfiltered. Only
+exact string equality is supported; ranges ("after this date") are not.
+
 One edge case is a design decision rather than an oversight: a query that
 tokenises to nothing (`""`, or `"the who"` with stopwords removed) returns `()`.
 Empty is a legitimate answer. Callers handle it; the engine does not raise.
@@ -103,9 +113,9 @@ Roughly in the order the additions pay off:
    retrieval system's actual code ends up living.
 4. **An ANN index.** Only past roughly a million vectors, and knowingly: HNSW and
    IVF buy latency by giving back recall.
-5. **Metadata filtering.** "Only search documents from this tenant, after this
-   date." Cheap to add, and the constraint that most often decides whether a
-   result is usable at all.
+5. **Richer metadata filters.** minirag's `where=` does exact equality; a real
+   system needs ranges, sets and negation ("this tenant, after this date"), and
+   pushes them into the index so filtered search does not scan every row.
 6. **Measurement.** Recall@k over a labelled query set, run on every change.
    Without it every tuning decision is a guess — `k1`, `b`, `rrf_k`, the fusion
    weights and the chunk size all trade against each other.

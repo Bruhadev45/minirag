@@ -31,20 +31,20 @@ for hit in engine.search("which moon has an ocean under the ice?", mode="hybrid"
 
 | Module | Lines | What it does |
 | --- | ---: | --- |
-| `src/minirag/tokenize.py` | 66 | Lowercase, strip punctuation, optional stopword removal |
-| `src/minirag/chunker.py` | 128 | Sentence-aware sliding window with overlap |
+| `src/minirag/tokenize.py` | 64 | Lowercase, strip punctuation, optional stopword removal |
+| `src/minirag/chunker.py` | 125 | Sentence-aware sliding window with overlap |
 | `src/minirag/bm25.py` | 147 | Inverted index, IDF, TF saturation (`k1`), length norm (`b`) |
-| `src/minirag/vectors.py` | 146 | Hashed TF-IDF embedder + brute-force cosine index |
+| `src/minirag/vectors.py` | 145 | Hashed TF-IDF embedder + brute-force cosine index |
 | `src/minirag/fusion.py` | 65 | Weighted reciprocal rank fusion |
-| `src/minirag/engine.py` | 175 | `index()` / `search()`, three retrieval modes |
+| `src/minirag/engine.py` | 183 | `index()` / `search()`, three modes, metadata filter |
 | `src/minirag/demo.py` | 44 | `python -m minirag.demo`, the runnable tour |
-| `src/minirag/__init__.py` | 27 | Public surface |
-| **Total** | **798** | Budget **800**, enforced by `tests/test_line_budget.py` |
+| `src/minirag/__init__.py` | 26 | Public surface |
+| **Total** | **799** | Budget **800**, enforced by `tests/test_line_budget.py` |
 
 Physical lines, docstrings and blanks included — the lines you actually scroll
-past. 129 tests cover it, and `ruff check src/ tests/` is clean. The budget test
-asserts `< 800`, so exactly one line of headroom is left: adding a feature now
-means trimming prose first, which is the trade the budget exists to force.
+past. 143 tests cover it, and `ruff check src/ tests/` is clean. The budget test
+asserts `< 800`, so there is no headroom left: metadata filtering only fit after
+trimming prose elsewhere, which is the trade the budget exists to force.
 
 ## Quickstart
 
@@ -97,6 +97,14 @@ Three search modes:
   model); occasionally confidently wrong.
 - **`hybrid`** — fuses the two *rankings*, not their scores. Ranks are comparable;
   an unbounded BM25 score and a cosine in `[0, 1]` are not.
+
+Every mode takes `where={"field": value}` to search only documents whose
+metadata matches every pair. It filters *before* ranking, so a matching document
+is never crowded out by higher-ranked ones that do not match:
+
+```python
+engine.search("ocean", where={"title": "Europa"})
+```
 
 ## The walkthrough
 
