@@ -1,5 +1,8 @@
 # minirag
 
+[![CI](https://github.com/Bruhadev45/minirag/actions/workflows/ci.yml/badge.svg)](https://github.com/Bruhadev45/minirag/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
+
 **A complete RAG engine in <800 lines. No frameworks. Read it in an afternoon.**
 
 No LangChain. No LlamaIndex. No vector database. No model download. No network
@@ -42,7 +45,8 @@ for hit in engine.search("which moon has an ocean under the ice?", mode="hybrid"
 | **Total** | **799** | Budget **800**, enforced by `tests/test_line_budget.py` |
 
 Physical lines, docstrings and blanks included — the lines you actually scroll
-past. 143 tests cover it, and `ruff check src/ tests/` is clean. The budget test
+past. 143 tests cover it at a 95% coverage floor (measured 99%), `ruff check`
+is clean, and CI runs all of it on Python 3.10–3.13 plus macOS. The budget test
 asserts `< 800`, so there is no headroom left: metadata filtering only fit after
 trimming prose elsewhere, which is the trade the budget exists to force.
 
@@ -51,8 +55,8 @@ trimming prose elsewhere, which is the trade the budget exists to force.
 ```bash
 python3.12 -m venv .venv
 .venv/bin/pip install -e ".[dev]"
-.venv/bin/pytest          # the full suite, including the line budget
-.venv/bin/ruff check src/ tests/
+.venv/bin/pytest          # the full suite, coverage floor, and the line budget
+.venv/bin/ruff check src/ tests/ extras/
 .venv/bin/python -m minirag.demo   # six documents, two queries, three modes
 ```
 

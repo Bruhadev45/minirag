@@ -19,19 +19,22 @@ classifiers = [
   "Programming Language :: Python :: 3.10",
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
   "Topic :: Text Processing :: Indexing",
 ]
 dependencies = ["numpy>=1.24"]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0", "ruff>=0.6"]
+dev = ["pytest>=8.0", "pytest-cov>=5.0", "ruff>=0.6"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/minirag"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-q"
+# Coverage floor: measured 99% on 2026-10-10; 95 leaves room for honest
+# branches without letting the number drift unnoticed.
+addopts = "-q --cov=minirag --cov-report=term-missing --cov-fail-under=95"
 # `extras/` lives outside the package (and outside the line budget), so put
 # the repo root on the path for tests/test_hnsw.py.
 pythonpath = ["."]
