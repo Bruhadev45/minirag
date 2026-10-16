@@ -45,7 +45,7 @@ for hit in engine.search("which moon has an ocean under the ice?", mode="hybrid"
 | **Total** | **799** | Budget **800**, enforced by `tests/test_line_budget.py` |
 
 Physical lines, docstrings and blanks included — the lines you actually scroll
-past. 143 tests cover it at a 95% coverage floor (measured 99%), `ruff check`
+past. 159 tests cover it at a 95% coverage floor (measured 99%), `ruff check`
 is clean, and CI runs all of it on Python 3.10–3.13 plus macOS. The budget test
 asserts `< 800`, so there is no headroom left: metadata filtering only fit after
 trimming prose elsewhere, which is the trade the budget exists to force.
@@ -158,6 +158,38 @@ That silence is the point: an ANN index never reports the neighbours it missed.
 
 ```bash
 .venv/bin/pytest tests/test_hnsw.py -q
+```
+
+- **[`extras/eval.py`](extras/eval.py)** — recall@k and MRR for `bm25`, `dense`
+  and `hybrid` over the fixture's labelled queries, indexed exactly as the
+  quickstart above does. `tests/test_eval.py` checks the metric math on
+  hand-worked rankings and pins the measured table.
+
+### Measured on the toy corpus
+
+Output of `python -m extras.eval`, pasted unedited:
+
+```
+5 queries over 20 documents (fixture corpus)
+
+| mode | recall@1 | recall@3 | recall@5 | MRR |
+| --- | ---: | ---: | ---: | ---: |
+| `bm25` | 1.0000 | 1.0000 | 1.0000 | 1.0000 |
+| `dense` | 1.0000 | 1.0000 | 1.0000 | 1.0000 |
+| `hybrid` | 1.0000 | 1.0000 | 1.0000 | 1.0000 |
+```
+
+Every mode is at the ceiling, and that is the honest result: each of the five
+fixture queries shares distinctive words with its answer ("methane",
+"greenhouse", "red storm"), so exact matching alone ranks it first, and the
+hashed embedder — TF-IDF in disguise — agrees. This set cannot tell the modes
+apart, so it shows no gain from fusion; separating them takes paraphrased
+queries, which need a real embedding model to answer. What the table does do
+is act as a tripwire: a tokeniser, chunker or fusion change that loses one of
+these answers drops a cell to 0.8 and fails the pinned test.
+
+```bash
+.venv/bin/python -m extras.eval
 ```
 
 ## Honest limitations
