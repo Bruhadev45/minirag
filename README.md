@@ -45,7 +45,7 @@ for hit in engine.search("which moon has an ocean under the ice?", mode="hybrid"
 | **Total** | **799** | Budget **800**, enforced by `tests/test_line_budget.py` |
 
 Physical lines, docstrings and blanks included — the lines you actually scroll
-past. 159 tests cover it at a 95% coverage floor (measured 99%), `ruff check`
+past. 192 tests cover it at a 95% coverage floor (measured 99%), `ruff check`
 is clean, and CI runs all of it on Python 3.10–3.13 plus macOS. The budget test
 asserts `< 800`, so there is no headroom left: metadata filtering only fit after
 trimming prose elsewhere, which is the trade the budget exists to force.
@@ -128,8 +128,8 @@ Five staged documents that build the system up, in `docs/walkthrough/`:
 ## Extras
 
 Code that is worth reading but does not belong inside the budget lives in
-`extras/` — beyond the 800 lines, same spirit: no new dependencies, every
-parameter explained, every claim measured.
+`extras/` — beyond the 800 lines, same spirit: no new required dependencies,
+every parameter explained, every claim measured or labelled as unmeasured.
 
 - **[`extras/hnsw.py`](extras/hnsw.py)** — a minimal HNSW index, the approximate
   neighbour search this repo argues you do not need yet. It is here so the
@@ -192,6 +192,56 @@ these answers drops a cell to 0.8 and fails the pinned test.
 .venv/bin/python -m extras.eval
 ```
 
+- **[`extras/rerank.py`](extras/rerank.py)** — a second pass over the first
+  stage's shortlist. `apply(engine, query, reranker)` runs `engine.search` for
+  the top `candidates` (20 by default), scores each hit's chunk text and
+  re-orders them. It wraps the engine instead of adding `search(..., rerank=...)`
+  because the core has no line left for the hook. It only re-orders what
+  `search` returned, so a `where` filter still decides which documents can come
+  back. The reranker is still trusted code that reads every candidate's text,
+  and it sees only each document's best first-stage chunk. Two rerankers share
+  the one-method `Reranker` protocol:
+  - `BM25Reranker` — no dependency. BM25 over the shortlist alone, so a word
+    every candidate shares counts for little and a word that separates them
+    counts for a lot. Useful after `hybrid`, whose RRF kept only ranks.
+  - `CrossEncoderReranker("<model name>")` — wraps a sentence-transformers
+    `CrossEncoder`, imported only when you build one
+    (`pip install sentence-transformers`; it pulls in torch, and the model
+    downloads on first use). Loading a model can run code shipped with it, so
+    pick the model yourself, never from a request; the adapter never sets
+    `trust_remote_code`. The tests drive it with a fake model, so nothing in
+    this repo measures a real cross-encoder yet.
+
+With `engine` indexed over the fixture corpus as in the quickstart, from the
+repo root:
+
+```python
+from extras.rerank import BM25Reranker, apply
+
+query = "which moon has an ocean under the ice"
+print("hybrid:  ", [hit.doc_id for hit in engine.search(query, top_k=3)])
+for r in apply(engine, query, BM25Reranker(), top_k=3):
+    print(f"{r.score:.4f}  {r.doc_id:<7} was #{r.first_stage_rank}")
+```
+
+```
+hybrid:   ['moon', 'pluto', 'europa']
+1.7158  moon    was #1
+1.5657  europa  was #3
+1.3522  pluto   was #2
+```
+
+Europa's chunk matches "ocean" and "ice" and now beats Pluto's, which matches
+only "ice". It still trails the Moon's ("moon", "ocean") because Europa's text
+says "moons", and with no stemmer that never matches "moon". A lexical second
+opinion rewards shared words and nothing else. On the five labelled fixture
+queries it keeps every answer first, which `tests/test_rerank.py` pins, so it
+loses none of them; at the ceiling already, it cannot show a gain either.
+
+```bash
+.venv/bin/pytest tests/test_rerank.py -q
+```
+
 ## Honest limitations
 
 This is a teaching repository. It is correct, tested, and deliberately incomplete.
@@ -220,8 +270,10 @@ This is a teaching repository. It is correct, tested, and deliberately incomplet
   but the stopword list won't apply.
 - **Sentence splitting is a regex.** `Dr. Sagan` splits into two sentences. A
   trained segmenter would not.
-- **No reranking.** A cross-encoder over the fused top-50 is the single highest-value
-  addition to a real pipeline, and it is not here.
+- **Reranking is lexical unless you bring a model.** `extras/rerank.py` ships the
+  hook, a BM25 reranker and a cross-encoder adapter, but the adapter has only run
+  against a fake model in the tests. No cross-encoder is downloaded, run or
+  measured in this repo.
 - **Single-process, no concurrency story.** The index is immutable once built, so
   reads are safe; writes are a full replacement.
 
