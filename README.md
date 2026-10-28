@@ -242,6 +242,57 @@ loses none of them; at the ceiling already, it cannot show a gain either.
 .venv/bin/pytest tests/test_rerank.py -q
 ```
 
+- **[`extras/persist.py`](extras/persist.py)** — `save(engine, "index.npz")` and
+  `load("index.npz")`, so you index once and search later. Numpy only, no
+  pickle. The `.npz` holds the dense matrix and the embedder's IDF weights as
+  raw float64, which come back bit for bit. A JSON sidecar beside it holds the
+  settings, metadata and chunk text. BM25 is rebuilt from that text at load,
+  one tokenise pass. `tests/test_persist.py` checks that every mode, `top_k`
+  and `where` filter returns identical hits after a round trip.
+  - Loading fails with `PersistError` if the format version or the minirag
+    version differs, because a changed tokeniser would quietly break saved
+    vectors. The sidecar also stores a fingerprint of what the tokeniser and
+    term hash do to one fixed probe sentence. That catches an edit made without
+    a version bump, as long as the probe exercises it.
+  - Loading also fails if the two files come from different saves: the sidecar
+    records the `.npz`'s SHA-256. Each file is written to a temporary file and
+    renamed into place. A crash between the two renames is caught at load, but
+    leaves neither the old index nor the new one loadable, so save to a new
+    path if the old one must survive.
+  - Metadata must be `str` to `str` to be saved; anything else is refused
+    before a byte is written.
+  - Every field is checked on load and compressed archives are refused, so a
+    corrupted file gives a clear error. That is not authentication: whoever can
+    write the sidecar can recompute the hash, and a crafted index decides which
+    chunk text ranks first and reaches your prompt. Load only files you wrote.
+  - The matrix is stored dense and uncompressed: about 32 KB per chunk at the
+    default `dim=4096`, most of it zeros.
+
+With `engine` indexed over the fixture corpus as in the quickstart, from the
+repo root:
+
+```python
+from extras.persist import load, save
+
+npz_path, sidecar = save(engine, "fixture-index.npz")
+print(f"{npz_path} {npz_path.stat().st_size:,} bytes, {sidecar} {sidecar.stat().st_size:,} bytes")
+
+restored = load(npz_path)
+query = "which moon has an ocean under the ice"
+print([hit.doc_id for hit in restored.search(query, top_k=3)])
+print(restored.search(query, top_k=20) == engine.search(query, top_k=20))
+```
+
+```
+fixture-index.npz 1,343,992 bytes, fixture-index.json 12,924 bytes
+['moon', 'pluto', 'europa']
+True
+```
+
+```bash
+.venv/bin/pytest tests/test_persist.py -q
+```
+
 ## Honest limitations
 
 This is a teaching repository. It is correct, tested, and deliberately incomplete.
@@ -257,9 +308,10 @@ This is a teaching repository. It is correct, tested, and deliberately incomplet
   than hidden — see [stage 3](docs/walkthrough/03-dense-search.md).
 - **There is no generation.** minirag is the *retrieval* in RAG. It hands you the
   chunk text; prompting a model with it is your job.
-- **Everything is in memory, and rebuilt from scratch.** No persistence, no
-  incremental updates. Re-index to change anything. Expect it to be comfortable up
-  to roughly 10<sup>4</sup>–10<sup>5</sup> chunks on a laptop, then not.
+- **Everything is in memory, and rebuilt from scratch.** `extras/persist.py` saves
+  and loads a whole index, but there are no incremental updates: re-index and save
+  again to change anything. Expect it to be comfortable up to roughly
+  10<sup>4</sup>–10<sup>5</sup> chunks on a laptop, then not.
 - **Search is exact, not approximate.** Brute-force cosine is O(n) per query, which
   beats ANN structures at this scale and loses badly beyond it. The measured
   version of that claim is [`extras/hnsw.py`](extras/hnsw.py) and the recall
