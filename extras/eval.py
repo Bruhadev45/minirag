@@ -2,7 +2,7 @@
 
 The README says hybrid "settles" the disagreements between BM25 and dense
 search. That is a claim about numbers, so this module produces them: it
-indexes the fixture corpus exactly as the README quickstart does, runs every
+indexes the fixture corpus exactly as the README corpus example does, runs every
 fixture query in each mode, and scores the rankings against the labelled
 answer. It lives outside the 800-line budget, like ``hnsw.py``, because
 measuring the engine is a different job from being the engine.
@@ -113,7 +113,7 @@ def evaluate(
 
 
 def run(path: Path = FIXTURE, ks: Sequence[int] = KS) -> tuple[ModeResult, ...]:
-    """Index the fixture as the README quickstart does and score every mode."""
+    """Index the fixture as the README corpus example does and score every mode."""
     documents, queries = load_fixture(path)
     engine = MiniRAG(max_tokens=60, overlap_tokens=20)
     engine.index(documents)

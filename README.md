@@ -15,6 +15,66 @@ just what — the BM25 module walks the formula term by term, the chunker argues
 overlap, the vector module marks the exact seam where you would plug in a real
 embedding model.
 
+**What it does, and what it does not.** You give minirag documents; it gives
+you back ranked chunks of their text with scores. It never calls a language
+model and never writes an answer — passing those chunks to a model is your job.
+The `dense` mode runs on a hashed TF-IDF embedder: arithmetic over word counts,
+no model and no download. It matches shared words, not meanings ("car" never
+finds "automobile"). A learned embedding model plugs in at the `Embedder`
+protocol; this repo does not ship or measure one.
+
+## First result in a minute
+
+You need Python 3.10 or newer (CI tests 3.10–3.13) and `git`. minirag is not
+published on PyPI (checked 2026-10-29), so install it from GitHub. If a package
+named `minirag` appears on PyPI, it is not this project unless this README says
+so. In a new, empty directory (macOS/Linux shown; on Windows the venv's
+programs are in `.venv\Scripts\`):
+
+```bash
+python3 --version   # must print 3.10 or newer
+python3 -m venv .venv
+.venv/bin/pip install "git+https://github.com/Bruhadev45/minirag.git"
+.venv/bin/python -m minirag.demo
+```
+
+If `python3` is older, name a newer interpreter instead, e.g.
+`python3.12 -m venv .venv`. The `/usr/bin/python3` that Apple's developer tools
+install can be too old: it was 3.9.6 on the Mac where these steps were checked.
+The only tagged release, v0.1.0, predates both the demo and the `where=`
+filter, so install from `main`; `main` still reports version 0.1.0 because the
+version number has not been bumped since. To pin a revision, append
+`@<commit>` to the URL. The demo indexes six one-line documents and asks two
+questions in all three modes:
+
+```
+indexed 6 documents -> 6 chunks
+
+query: 'which moon hides an ocean beneath the ice'
+  expect: europa, and all three modes agree
+    bm25   1. europa 3.5001   2. pluto 1.0099   3. mars 0.9549
+   dense   1. europa 0.3938   2. pluto 0.1167   3. mars 0.1090
+  hybrid   1. europa 0.0328   2. pluto 0.0323   3. mars 0.0317
+
+query: 'volcanic eruptions on a moon'
+  expect: io missing everywhere -- no stemming, no synonyms
+    bm25   1. enceladus 0.7214   2. titan 0.7214   3. europa 0.6428
+   dense   1. titan 0.1006   2. enceladus 0.0994   3. europa 0.0850
+  hybrid   1. enceladus 0.0325   2. titan 0.0325   3. europa 0.0317
+
+Scores compare only within a mode; the ranking is the point.
+```
+
+The first question works in every mode. The second fails in every mode, and
+that is deliberate: "volcanic" never matches Io's "volcanically" without a
+stemmer, and the hashed embedder does not bridge that gap here either.
+[Stage 5](docs/walkthrough/05-putting-it-together.md) unpacks why. Each mode
+scores on its own scale: BM25 is unbounded, `dense` is a cosine, and `hybrid`
+is a reciprocal rank fusion score, where 0.0328 (1/61 + 1/61) means first in
+both lists.
+
+### Use it from Python
+
 ```python
 from minirag import Document, MiniRAG
 
@@ -29,6 +89,14 @@ engine.index([
 for hit in engine.search("which moon has an ocean under the ice?", mode="hybrid"):
     print(f"{hit.score:.4f}  {hit.doc_id}  {hit.text[:60]}...")
 ```
+
+```
+0.0328  europa  Europa is a moon of Jupiter. Beneath its icy crust lies a sa...
+```
+
+One hit, not two. Once stopwords are dropped the question is `moon ocean ice`;
+Io's text contains none of those words, so it scores zero in both retrievers,
+and a zero-score document is left out of the results.
 
 ## Line count
 
@@ -45,24 +113,28 @@ for hit in engine.search("which moon has an ocean under the ice?", mode="hybrid"
 | **Total** | **799** | Budget **800**, enforced by `tests/test_line_budget.py` |
 
 Physical lines, docstrings and blanks included — the lines you actually scroll
-past. 192 tests cover it at a 95% coverage floor (measured 99%), `ruff check`
-is clean, and CI runs all of it on Python 3.10–3.13 plus macOS. The budget test
-asserts `< 800`, so there is no headroom left: metadata filtering only fit after
-trimming prose elsewhere, which is the trade the budget exists to force.
+past. The test suite covers the core and the extras, with a 95% coverage floor
+on the core (measured 99%), and `tests/test_readme.py` re-runs this README's
+demo, Python and corpus examples from a clone and compares them with their
+pasted output (the Git install itself is not run in the tests). `ruff check` is
+clean, and CI runs all of it on Python 3.10–3.13 plus macOS. The budget test
+asserts `< 800`, so there is no headroom left: metadata filtering only fit
+after trimming prose elsewhere, which is the trade the budget exists to force.
 
-## Quickstart
+## Develop: clone, test, and run the extras
+
+The installed package holds only `src/minirag`. The tests, the fixture corpus
+and `extras/` live in the repository, so everything from here on runs from the
+root of a clone:
 
 ```bash
-python3.12 -m venv .venv
-.venv/bin/pip install -e ".[dev]"
-.venv/bin/pytest          # the full suite, coverage floor, and the line budget
+git clone https://github.com/Bruhadev45/minirag.git
+cd minirag
+python3.12 -m venv .venv          # any Python 3.10 or newer
+.venv/bin/pip install -e ".[dev]"  # editable install plus pytest, pytest-cov and ruff
+.venv/bin/pytest                   # the full suite, coverage floor, and the line budget
 .venv/bin/ruff check src/ tests/ extras/
-.venv/bin/python -m minirag.demo   # six documents, two queries, three modes
 ```
-
-The demo is the 30-second version: it indexes six one-line documents and prints
-each mode's top three for two questions — one every mode answers, one every mode
-gets wrong. [Stage 5](docs/walkthrough/05-putting-it-together.md) unpacks why.
 
 Then run it against the test corpus — 20 short documents about the solar system,
 shipped in `tests/fixtures/corpus.json`:
@@ -79,6 +151,27 @@ for query in [q["query"] for q in data["queries"]]:
     top = engine.search(query, top_k=1)[0]
     print(f"{query!r}\n  -> {top.doc_id} ({top.score:.4f})\n")
 ```
+
+```
+'which planet has a giant red storm bigger than Earth'
+  -> jupiter (0.0328)
+
+'moon with lakes of liquid methane and a thick nitrogen atmosphere'
+  -> titan (0.0328)
+
+'runaway greenhouse effect makes this the hottest planet'
+  -> venus (0.0328)
+
+'subsurface saltwater ocean under an icy crust'
+  -> europa (0.0328)
+
+'spectacular ring system made of water ice particles'
+  -> saturn (0.0328)
+```
+
+All five top hits are the labelled answers, and each is first in both lists.
+These queries share distinctive words with their answers, so they are easy;
+[`extras/eval.py`](extras/eval.py) below says the same in numbers.
 
 Try the same queries with `mode="bm25"` and `mode="dense"` to watch the two
 retrievers disagree, then `mode="hybrid"` to watch fusion settle it.
@@ -162,7 +255,7 @@ That silence is the point: an ANN index never reports the neighbours it missed.
 
 - **[`extras/eval.py`](extras/eval.py)** — recall@k and MRR for `bm25`, `dense`
   and `hybrid` over the fixture's labelled queries, indexed exactly as the
-  quickstart above does. `tests/test_eval.py` checks the metric math on
+  corpus example above does. `tests/test_eval.py` checks the metric math on
   hand-worked rankings and pins the measured table.
 
 ### Measured on the toy corpus
@@ -212,7 +305,7 @@ these answers drops a cell to 0.8 and fails the pinned test.
     `trust_remote_code`. The tests drive it with a fake model, so nothing in
     this repo measures a real cross-encoder yet.
 
-With `engine` indexed over the fixture corpus as in the quickstart, from the
+With `engine` indexed over the fixture corpus as in the corpus example, from the
 repo root:
 
 ```python
@@ -268,7 +361,7 @@ loses none of them; at the ceiling already, it cannot show a gain either.
   - The matrix is stored dense and uncompressed: about 32 KB per chunk at the
     default `dim=4096`, most of it zeros.
 
-With `engine` indexed over the fixture corpus as in the quickstart, from the
+With `engine` indexed over the fixture corpus as in the corpus example, from the
 repo root:
 
 ```python

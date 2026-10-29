@@ -72,7 +72,7 @@ def engine() -> MiniRAG:
 
 @pytest.fixture(scope="module")
 def fixture_engine(documents: tuple[Document, ...]) -> MiniRAG:
-    """The fixture corpus, indexed exactly as the README quickstart does."""
+    """The fixture corpus, indexed exactly as the README corpus example does."""
     rag = MiniRAG(max_tokens=60, overlap_tokens=20)
     rag.index(documents)
     return rag
