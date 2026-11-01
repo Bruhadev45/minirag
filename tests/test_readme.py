@@ -10,6 +10,7 @@ network and a fresh venv.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import subprocess
@@ -85,6 +86,39 @@ def test_first_result_installs_from_git_and_shows_the_demo_output() -> None:
     assert INSTALL in commands.splitlines()
     assert ".venv/bin/python -m minirag.demo" in commands.splitlines()
     assert run_python(["-m", "minirag.demo"]) == expected.splitlines()
+
+
+EXPLAIN = "## Watch the two retrievers disagree"
+EXPLAIN_COMMAND = ".venv/bin/python -m extras.explain"
+CAST = ROOT / "docs" / "media" / "explain.cast"
+ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
+
+
+def test_explain_section_runs_from_a_clone_and_shows_its_output() -> None:
+    commands, expected = example_and_output(EXPLAIN, "bash")
+    lines = [line.split("#")[0].strip() for line in commands.splitlines()]
+    assert lines[:2] == ["git clone https://github.com/Bruhadev45/minirag.git", "cd minirag"]
+    assert lines[-1] == EXPLAIN_COMMAND
+    assert run_python(["-m", "extras.explain"]) == expected.splitlines()
+
+
+def test_explain_recording_is_linked_with_alt_text_and_replays_the_same_lines() -> None:
+    section = README.read_text(encoding="utf-8").split(f"\n{EXPLAIN}\n", 1)[1].split("\n## ")[0]
+    image = re.search(r"!\[([^\]]+)\]\((docs/media/explain\.gif)\)", section)
+    assert image, "the explain section has no linked recording"
+    assert "python -m extras.explain" in image[1] and "text block below" in image[1]
+    gif = (ROOT / image[2]).read_bytes()
+    assert gif[:6] == b"GIF89a" and len(gif) < 500_000
+
+    # asciicast v2: a JSON header line, then [seconds, "o", text] output events.
+    # Split on "\n" only: str.splitlines would also split inside recorded text.
+    lines = [line.rstrip("\r") for line in CAST.read_text("utf-8").split("\n") if line.strip()]
+    header, *events = (json.loads(line) for line in lines)
+    assert header["version"] == 2 and header["width"] >= 80
+    played = ANSI.sub("", "".join(text for _, kind, text in events if kind == "o"))
+    prompt, *output = played.replace("\r\n", "\n").rstrip("\n").split("\n")
+    assert prompt == f"$ {EXPLAIN_COMMAND}"
+    assert output == example_and_output(EXPLAIN, "bash")[1].splitlines()
 
 
 @pytest.mark.parametrize(

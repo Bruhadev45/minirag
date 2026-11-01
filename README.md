@@ -98,6 +98,93 @@ One hit, not two. Once stopwords are dropped the question is `moon ocean ice`;
 Io's text contains none of those words, so it scores zero in both retrievers,
 and a zero-score document is left out of the results.
 
+## Watch the two retrievers disagree
+
+`hybrid` prints one score per hit and hides where it came from.
+[`extras/explain.py`](extras/explain.py) shows the working: what BM25 and
+dense search each ranked first, and what each one added to every hybrid
+score. It needs a clone, because `extras/` is not in the installed package,
+and runs offline. If `python3` is older than 3.10, name a newer interpreter
+as in [First result in a minute](#first-result-in-a-minute):
+
+![Terminal recording of the command python -m extras.explain and its output. For "dwarf planet beyond neptune", BM25 ranks pluto#0 first, dense ranks asteroid_belt#1 first, and hybrid puts pluto#0 first. For "which moon has an ocean under the ice", BM25 ranks moon#0 first, dense ranks pluto#1 first, and hybrid puts moon#0 first. The full output is in the text block below.](docs/media/explain.gif)
+
+```bash
+git clone https://github.com/Bruhadev45/minirag.git
+cd minirag
+python3 --version                   # must print 3.10 or newer
+python3 -m venv .venv
+.venv/bin/pip install -e .
+.venv/bin/python -m extras.explain
+```
+
+```
+fixture corpus: 20 documents -> 40 chunks
+
+query: 'dwarf planet beyond neptune'
+
+  rank  bm25              score  dense            cosine
+     1  pluto#0          5.8594  asteroid_belt#1  0.2100
+     2  kuiper_belt#0    4.4007  pluto#0          0.2057
+     3  asteroid_belt#1  4.2919  kuiper_belt#0    0.1613
+  bm25 and dense disagree on the top chunk; hybrid puts pluto#0 first.
+
+  rank  hybrid           bm25 adds            dense adds              score
+     1  pluto#0          1/(60+1) = 0.016393  1/(60+2) = 0.016129  0.032522
+     2  asteroid_belt#1  1/(60+3) = 0.015873  1/(60+1) = 0.016393  0.032266
+     3  kuiper_belt#0    1/(60+2) = 0.016129  1/(60+3) = 0.015873  0.032002
+
+query: 'which moon has an ocean under the ice'
+
+  rank  bm25       score  dense     cosine
+     1  moon#0    3.3790  pluto#1   0.2226
+     2  europa#0  3.2855  moon#0    0.1721
+     3  pluto#1   3.1957  europa#0  0.1678
+  bm25 and dense disagree on the top chunk; hybrid puts moon#0 first.
+
+  rank  hybrid    bm25 adds            dense adds              score
+     1  moon#0    1/(60+1) = 0.016393  1/(60+2) = 0.016129  0.032522
+     2  pluto#1   1/(60+3) = 0.015873  1/(60+1) = 0.016393  0.032266
+     3  europa#0  1/(60+2) = 0.016129  1/(60+3) = 0.015873  0.032002
+```
+
+In the first query, BM25 puts Pluto's chunk first: it holds three of the
+four query words ("dwarf", "planet", "neptune"). Dense puts a chunk about
+Ceres first, which holds only "dwarf" and "planet", from a document that
+places the asteroid belt between Mars and Jupiter, not beyond Neptune.
+Before dividing, Pluto's chunk scores higher (3.90 against 2.97). But a
+cosine compares direction, not amount: it divides by the length of each
+chunk's vector, so the extra words in Pluto's longer chunk (28 words once
+stopwords are dropped, against 17) dilute its match, and the order flips.
+
+Hybrid never sees either score. Each list adds `1/(60 + rank)`, so Pluto's
+chunk, 1st and 2nd, gets 1/61 + 1/62 = 0.032522 and beats the Ceres chunk,
+3rd and 1st, at 1/63 + 1/61 = 0.032266. Being near the top of both lists
+beats being first in one.
+
+The second query shows the limit. BM25 puts the Moon first (its chunk says
+"moon" and "ocean", for the tides). Dense puts Pluto's short "water ice"
+chunk first, and hybrid settles on the Moon, 1st and 2nd. Europa, whose
+ocean does lie under ice, is 2nd and 3rd, so it comes third: its text says
+"moons", which never matches "moon" without a stemmer. Fusion rewards
+agreement between two word matchers; it cannot know which answer is right.
+On the same query, `extras/rerank.py` lifts Europa to second (see
+[Extras](#extras)).
+
+Both retrievers match words, so this is not lexical-versus-semantic
+disagreement: the hashed `dense` mode weighs the same words differently.
+These two queries were picked because the retrievers disagree on them; on
+all five labelled fixture queries they put the same document first. They
+show how fusion works and measure nothing. Ranks are chunk ranks (`pluto#0`
+is Pluto's first chunk), because RRF fuses chunks before `search` keeps each
+document's best one. Pass your own queries, such as
+`.venv/bin/python -m extras.explain "icy moon of saturn"`, and `--top-k 5`
+for deeper lists. The recording was made by
+[`docs/media/record.sh`](docs/media/record.sh) with asciinema 3.2.1, and the
+GIF rendered from it with agg 1.9.0. `tests/test_readme.py` checks that the
+recorded session (`docs/media/explain.cast`), the block above and a fresh run
+print the same lines; no test reads the GIF's pixels.
+
 ## Line count
 
 | Module | Lines | What it does |
@@ -115,9 +202,9 @@ and a zero-score document is left out of the results.
 Physical lines, docstrings and blanks included — the lines you actually scroll
 past. The test suite covers the core and the extras, with a 95% coverage floor
 on the core (measured 99%), and `tests/test_readme.py` re-runs this README's
-demo, Python and corpus examples from a clone and compares them with their
-pasted output (the Git install itself is not run in the tests). `ruff check` is
-clean, and CI runs all of it on Python 3.10–3.13 plus macOS. The budget test
+demo, Python, explain and corpus examples from a clone and compares them with
+their pasted output (the Git install itself is not run in the tests).
+`ruff check` is clean, and CI runs all of it on Python 3.10–3.13 plus macOS. The budget test
 asserts `< 800`, so there is no headroom left: metadata filtering only fit
 after trimming prose elsewhere, which is the trade the budget exists to force.
 
@@ -173,8 +260,9 @@ All five top hits are the labelled answers, and each is first in both lists.
 These queries share distinctive words with their answers, so they are easy;
 [`extras/eval.py`](extras/eval.py) below says the same in numbers.
 
-Try the same queries with `mode="bm25"` and `mode="dense"` to watch the two
-retrievers disagree, then `mode="hybrid"` to watch fusion settle it.
+On these five, `bm25` and `dense` put the same document first.
+[Watch the two retrievers disagree](#watch-the-two-retrievers-disagree)
+shows two queries where they do not, and how `hybrid` settles them.
 
 ## How it fits together
 
@@ -284,6 +372,14 @@ these answers drops a cell to 0.8 and fails the pinned test.
 ```bash
 .venv/bin/python -m extras.eval
 ```
+
+- **[`extras/explain.py`](extras/explain.py)** — `explain(engine, query)`
+  returns each retriever's chunk ranking and, for every hybrid hit, what each
+  one added to its score; `python -m extras.explain` prints them. It reads the
+  engine's own ranking, so its hits are exactly what `search(mode="hybrid")`
+  returns and the contributions sum to each score; `tests/test_explain.py`
+  checks both on every fixture query. The worked example is
+  [above](#watch-the-two-retrievers-disagree).
 
 - **[`extras/rerank.py`](extras/rerank.py)** — a second pass over the first
   stage's shortlist. `apply(engine, query, reranker)` runs `engine.search` for
