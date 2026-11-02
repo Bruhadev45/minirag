@@ -220,7 +220,7 @@ cd minirag
 python3.12 -m venv .venv          # any Python 3.10 or newer
 .venv/bin/pip install -e ".[dev]"  # editable install plus pytest, pytest-cov and ruff
 .venv/bin/pytest                   # the full suite, coverage floor, and the line budget
-.venv/bin/ruff check src/ tests/ extras/
+.venv/bin/ruff check src/ tests/ extras/ examples/
 ```
 
 Then run it against the test corpus — 20 short documents about the solar system,
@@ -480,6 +480,36 @@ True
 
 ```bash
 .venv/bin/pytest tests/test_persist.py -q
+```
+
+## Legal RAG example (being built)
+
+`examples/legal_rag/` is where a legal-style RAG example is being built on top
+of minirag, outside the 800-line core. So far it has only its data: six records
+of original, fictional legal-like text. Each record carries a source ID and
+version, tenant/matter scope, jurisdiction and regime, effective dates,
+supersession, page spans, a licence, a content hash, and `"unknown"` wherever
+a fact is unknown. The [data card](examples/legal_rag/DATA_CARD.md) says where
+the text came from and what it cannot show.
+[`provenance.py`](examples/legal_rag/provenance.py) loads the records into
+frozen objects, or rejects the file and lists the problems it found:
+
+```bash
+.venv/bin/python -m examples.legal_rag.provenance
+```
+
+```
+6 valid records: 5 families, 3 tenant/matter scopes
+```
+
+Nothing indexes, retrieves or answers over these records yet. They are not law
+and not legal advice, and passing tests say nothing about legal accuracy. CI
+runs `tests/legal_rag/`; the module's own coverage floor and the lint of
+`examples/` run locally:
+
+```bash
+.venv/bin/pytest -q tests/legal_rag -o addopts="" --cov=examples.legal_rag --cov-fail-under=95
+.venv/bin/ruff check examples/
 ```
 
 ## Honest limitations

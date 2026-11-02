@@ -48,5 +48,5 @@ src = ["src", "tests"]
 select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
 
 [tool.ruff.lint.isort]
-# `extras/` is ours too, it just lives outside the package.
-known-first-party = ["extras", "minirag"]
+# `extras/` and `examples/` are ours too; they just live outside the package.
+known-first-party = ["examples", "extras", "minirag"]
