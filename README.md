@@ -485,12 +485,13 @@ True
 ## Legal RAG example (being built)
 
 `examples/legal_rag/` is where a legal-style RAG example is being built on top
-of minirag, outside the 800-line core. So far it has only its data: six records
-of original, fictional legal-like text. Each record carries a source ID and
-version, tenant/matter scope, jurisdiction and regime, effective dates,
-supersession, page spans, a licence, a content hash, and `"unknown"` wherever
-a fact is unknown. The [data card](examples/legal_rag/DATA_CARD.md) says where
-the text came from and what it cannot show.
+of minirag, outside the 800-line core. So far it has its data and an ingestion
+step. The data is six records of original, fictional legal-like text. Each
+record carries a source ID and version, tenant/matter scope, jurisdiction and
+regime, effective dates, supersession, page spans, a licence, a content hash,
+and `"unknown"` wherever a fact is unknown. The
+[data card](examples/legal_rag/DATA_CARD.md) says where the text came from and
+what it cannot show.
 [`provenance.py`](examples/legal_rag/provenance.py) loads the records into
 frozen objects, or rejects the file and lists the problems it found:
 
@@ -502,9 +503,50 @@ frozen objects, or rejects the file and lists the problems it found:
 6 valid records: 5 families, 3 tenant/matter scopes
 ```
 
-Nothing indexes, retrieves or answers over these records yet. They are not law
+[`ingest.py`](examples/legal_rag/ingest.py) cuts each record along its own
+structure. Every section becomes a *parent*. Each parent is cut into *child*
+passages of whole sentences that never cross the section boundary, and a
+heading always stays with the first sentence under it. A child's text is
+exactly `record.text[start:end]`, so a later answer can quote it and point at
+the characters it came from. IDs are built from the source version and those
+offsets (`<source_id>#<section_id>:<start>-<end>`), so ingesting the same
+records again with the same limits, in another order or next to other records,
+gives the same IDs.
+Every passage also carries its source's content hash, so a text edited without
+a new version shows up as stale even though its IDs stay the same.
+
+```bash
+.venv/bin/python -m examples.legal_rag.ingest
+```
+
+```
+6 sources -> 13 sections -> 13 passages (max 120 words, overlap 30)
+  fic-basalt-file-note@v1#s1:87-251               31 words  '1. Note\nA Basaltine Marine vessel was...'
+  fic-harbour-inspection-guidance@v1#s1:113-245   23 words  '1. Small vessels\nThe Harbour Board tr...'
+  fic-harbour-inspection-guidance@v1#s2:247-350   21 words  '2. Status of this note\nThis note is g...'
+  fic-harbour-safety-act@v1#s1:94-232             25 words  '1. Inspections\nA vessel longer than 2...'
+  fic-harbour-safety-act@v1#s2:234-331            16 words  '2. Records\nThe harbour master keeps e...'
+  fic-harbour-safety-act@v1#s3:333-420            15 words  '3. Penalties\nBerthing without a valid...'
+  fic-harbour-safety-act@v2#s1:94-232             25 words  '1. Inspections\nA vessel longer than 2...'
+  fic-harbour-safety-act@v2#s2:234-331            16 words  '2. Records\nThe harbour master keeps e...'
+  fic-harbour-safety-act@v2#s3:333-420            15 words  '3. Penalties\nBerthing without a valid...'
+  fic-orchid-fleet-memo@v1#s1:107-219             17 words  '1. Schedule\nOrchidwake Shipping books...'
+  fic-orchid-fleet-memo@v1#s2:221-296             12 words  '2. Contact\nQuestions about this sched...'
+  fic-quillmouth-port-code@v1#s1:84-198           20 words  '1. Hull inspections\nEvery vessel usin...'
+  fic-quillmouth-port-code@v1#s2:200-271          12 words  '2. Exemptions\nVessels shorter than 10...'
+```
+
+The limit counts whitespace-separated words, not model tokens. A sentence
+longer than the limit is kept whole, never cut, and "sentence" means a simple
+punctuation rule, so "Dr. Lee" splits. The fixture's sections are one or two
+sentences, so at the default 120 words each section is one passage;
+`--max-words 12 --overlap-words 6` splits two of them in two. The overlap may
+be at most half the limit. It only shows on longer sections, which the tests
+build and check.
+
+Nothing retrieves or answers over these passages yet. The records are not law
 and not legal advice, and passing tests say nothing about legal accuracy. CI
-runs `tests/legal_rag/`; the module's own coverage floor and the lint of
+runs `tests/legal_rag/`; the modules' own coverage floor and the lint of
 `examples/` run locally:
 
 ```bash
