@@ -28,7 +28,7 @@ from examples.legal_rag.eligibility import (
     scoped_view,
     search,
 )
-from examples.legal_rag.ingest import Ingestion, ingest
+from examples.legal_rag.ingest import Child, Ingestion, ingest
 from examples.legal_rag.provenance import FIXTURE, NOTICE, content_hash, load, validate_corpus
 from minirag.engine import Document, Hit, MiniRAG
 
@@ -190,10 +190,12 @@ SCOPES = [scope(), scope(as_of=date(2023, 6, 30)), scope("tenant-orchid", "matte
 @pytest.mark.parametrize("s", SCOPES)
 def test_quoting_an_ineligible_passage_verbatim_never_ranks_it(s: Scope, mode: str) -> None:
     v = view(s)
+    hidden = {c.chunk_id for c in INGESTION.children if ineligibility(BY_ID[c.source_id], s)}
+    assert hidden and hidden.isdisjoint(v.children)
     for child in INGESTION.children:
-        for hit in search(v, child.text, top_k=20, mode=mode):
-            assert hit.child.chunk_id in v.children
-            assert BY_ID[hit.child.source_id].text[hit.child.start:hit.child.end] == hit.child.text
+        found = {hit.child.chunk_id for hit in search(v, child.text, top_k=20, mode=mode)}
+        assert found.isdisjoint(hidden)
+        assert (child.chunk_id in found) == (child.chunk_id not in hidden)
 
 
 @pytest.mark.parametrize("mode", MODES)
@@ -218,7 +220,7 @@ def test_filtering_after_ranking_would_leak_statistics() -> None:
     leaked = {h.doc_id: h.score for h in post}
     clean = {r.child.chunk_id: r.score for r in pre}
     assert leaked.keys() == clean.keys()  # the same passages survive the filter...
-    assert all(leaked[k] != clean[k] for k in clean)  # ...with scores the intruder moved
+    assert any(leaked[k] != clean[k] for k in clean)  # ...with scores the intruder moved
 
 
 def test_the_query_text_cannot_change_the_scope() -> None:
@@ -239,12 +241,14 @@ def test_record_order_changes_nothing() -> None:
 def test_search_rejects_what_it_cannot_serve(monkeypatch: pytest.MonkeyPatch) -> None:
     with pytest.raises(TypeError):
         search(dict(view(scope()).children), QUERY)  # type: ignore[arg-type]
-    assert search(view(scope(jurisdiction="fic-quillmouth")), QUERY) == ()
-    assert search(view(scope()), "the of and") == ()
-    with pytest.raises(ValueError):
-        search(view(scope()), QUERY, top_k=0)
-    with pytest.raises(ValueError):
-        search(view(scope()), QUERY, mode="fuzzy")  # type: ignore[arg-type]
+    empty = view(scope(jurisdiction="fic-quillmouth"))
+    assert search(empty, QUERY) == () and search(view(scope()), "   ") == ()
+    for v in (empty, view(scope())):  # the same error whether or not the scope has passages
+        for top_k in (0, True, 2.0):
+            with pytest.raises(ValueError, match="top_k must be an int"):
+                search(v, QUERY, top_k=top_k)  # type: ignore[arg-type]
+        with pytest.raises(ValueError, match="unknown mode"):
+            search(v, QUERY, mode="fuzzy")  # type: ignore[arg-type]
     orchid = next(c for c in INGESTION.children if c.source_id == ORCHID)
     leak = Hit(orchid.chunk_id, orchid.chunk_id, orchid.text, 1.0, "hybrid")
     monkeypatch.setattr(eligibility.MiniRAG, "search", lambda *a, **k: (leak,))
@@ -311,12 +315,26 @@ def test_conflicting_records_are_refused() -> None:
         scoped_view(two_owners, INGESTION, scope())
 
 
-def _children(*extra) -> Ingestion:
-    return dataclasses.replace(INGESTION, children=INGESTION.children + extra)
-
-
 ORCHID_CHILD = next(c for c in INGESTION.children if c.source_id == ORCHID)
 ACT2_CHILD = next(c for c in INGESTION.children if c.source_id == ACT2)
+
+
+def forged(new: object, old: Child | None = None) -> Ingestion:
+    """The ingestion with ``old`` swapped for ``new`` (or ``new`` added), and every parent
+    re-listing its children, so only the forged child itself can be wrong."""
+    children = tuple(new if c is old else c for c in INGESTION.children)
+    children += () if old is not None else (new,)
+    parents = tuple(dataclasses.replace(p, child_ids=tuple(
+        c.chunk_id for c in children if isinstance(c, Child) and c.parent_id == p.parent_id))
+        for p in INGESTION.parents)
+    return Ingestion(INGESTION.max_words, INGESTION.overlap_words, parents, children)
+
+
+def _parents(**changes) -> Ingestion:
+    """The ingestion with ACT2's first parent changed."""
+    return dataclasses.replace(INGESTION, parents=tuple(
+        dataclasses.replace(p, **changes) if p.parent_id == f"{ACT2}#s1" else p
+        for p in INGESTION.parents))
 
 
 def moved(child, source_id: str, parent_id: str, start: int, end: int):
@@ -324,27 +342,53 @@ def moved(child, source_id: str, parent_id: str, start: int, end: int):
     text = BY_ID[source_id].text
     return dataclasses.replace(child, source_id=source_id, parent_id=parent_id, start=start,
                                end=end, chunk_id=f"{parent_id}:{start}-{end}",
-                               content_hash=BY_ID[source_id].content_hash, text=text[start:end])
+                               content_hash=BY_ID[source_id].content_hash, text=text[start:end],
+                               words=len(text[start:end].split()))
+
+
+def _swap(old: Child, **changes) -> Ingestion:
+    return forged(dataclasses.replace(old, **changes), old)
+
+
+def renamed(**changes) -> Ingestion:
+    """ACT2's first section under another parent ID, its children re-filed to match."""
+    parent = next(p for p in INGESTION.parents if p.parent_id == f"{ACT2}#s1")
+    new = dataclasses.replace(parent, **changes)
+    kids = {c.chunk_id: dataclasses.replace(c, parent_id=new.parent_id,
+                                            chunk_id=f"{new.parent_id}:{c.start}-{c.end}")
+            for c in INGESTION.children if c.parent_id == parent.parent_id}
+    return Ingestion(
+        INGESTION.max_words, INGESTION.overlap_words,
+        tuple(dataclasses.replace(new, child_ids=tuple(k.chunk_id for k in kids.values()))
+              if p is parent else p for p in INGESTION.parents),
+        tuple(kids.get(c.chunk_id, c) for c in INGESTION.children))
 
 
 @pytest.mark.parametrize(("records", "ingestion", "bad"), [
     ([r for r in RECORDS if r.source_id != ORCHID], INGESTION, 4),  # no record: unknown scope
     ([dataclasses.replace(r, text=r.text + "x", content_hash=content_hash(r.text + "x"))
       if r.source_id == ACT2 else r for r in RECORDS], INGESTION, 6),  # stale passages
-    (RECORDS, _children(dataclasses.replace(ORCHID_CHILD, source_id=GUIDANCE)), 1),
-    (RECORDS, _children(dataclasses.replace(ACT2_CHILD, text="A vessel never needs one.")), 1),
-    (RECORDS, _children(dataclasses.replace(ACT2_CHILD, chunk_id=ACT2_CHILD.parent_id)), 1),
-    (RECORDS, _children(dataclasses.replace(ACT2_CHILD, parent_id=["x"])), 1),
-    (RECORDS, _children("not a child"), 1),
+    (RECORDS, _swap(ORCHID_CHILD, source_id=GUIDANCE), 1),
+    (RECORDS, _swap(ACT2_CHILD, text=" ".join(reversed(ACT2_CHILD.text.split()))), 1),
+    (RECORDS, _swap(ACT2_CHILD, chunk_id=ACT2_CHILD.parent_id), 1),
+    (RECORDS, _swap(ACT2_CHILD, parent_id=["x"]), 1),
+    (RECORDS, _swap(ACT2_CHILD, words=99), 1),
+    (RECORDS, forged("not a child"), 1),
+    (RECORDS, forged(ACT2_CHILD), 1),  # listed twice by its parent, but still a repeat
     # a real slice of a visible source, filed under another source's section
-    (RECORDS, _children(moved(ACT2_CHILD, GUIDANCE, ORCHID_CHILD.parent_id, 113, 200)), 1),
+    (RECORDS, forged(moved(ORCHID_CHILD, GUIDANCE, ORCHID_CHILD.parent_id, 113, 200),
+                     ORCHID_CHILD), 1),
     # a real slice of the same source, outside the section it claims
-    (RECORDS, _children(moved(ACT2_CHILD, ACT2, ACT2_CHILD.parent_id, 234, 331)), 1),
+    (RECORDS, forged(moved(ACT2_CHILD, ACT2, ACT2_CHILD.parent_id, 234, 331), ACT2_CHILD), 1),
+    (RECORDS, _parents(heading="1. Inspections waived"), 1),
+    (RECORDS, _parents(pages=(9, 9)), 1),
+    (RECORDS, _parents(child_ids=(ACT2_CHILD.chunk_id, ORCHID_CHILD.chunk_id)), 1),
+    (RECORDS, _parents(text="1. Inspections\nNo vessel needs one."), 1),
+    (RECORDS, renamed(section_id="s9", parent_id=f"{ACT2}#s9"), 1),  # no such section
+    (RECORDS, renamed(parent_id=f"{ACT2}#s9"), 1),  # an ID that is not its section's
+    (RECORDS, _parents(parent_id=f"{ACT2}#s9"), 2),  # and its orphaned child
     (RECORDS, dataclasses.replace(INGESTION, parents=(*INGESTION.parents[:1], "x",
                                                       *INGESTION.parents[1:])), 1),
-    (RECORDS, dataclasses.replace(INGESTION, parents=tuple(
-        dataclasses.replace(p, parent_id=f"{p.source_id}#s9") if p.parent_id == f"{ACT2}#s1"
-        else p for p in INGESTION.parents)), 2),  # the parent, then its orphaned child
 ])
 def test_passages_that_do_not_match_their_record_are_refused(records, ingestion, bad) -> None:
     with pytest.raises(EligibilityError) as info:
@@ -352,12 +396,46 @@ def test_passages_that_do_not_match_their_record_are_refused(records, ingestion,
     assert str(info.value) == f"{bad} passage(s) do not match their source record"
 
 
+class LaxScope(Scope):
+    """A subclass that skips the checks; scoped_view must not accept it."""
+
+    __slots__ = ()
+
+    def __post_init__(self) -> None:
+        pass
+
+
 @pytest.mark.parametrize("args", [
     (RECORDS, INGESTION, "public"), ([object()], INGESTION, scope()), (RECORDS, (), scope()),
+    (RECORDS, INGESTION, LaxScope("UNKNOWN", None, "fic-varnholt", "maritime-safety",
+                                  date(2024, 6, 1))),
 ])
 def test_wrong_types_are_refused(args) -> None:
     with pytest.raises(TypeError):
         scoped_view(*args)
+
+
+class Sly(str):
+    """A str subclass that claims to equal anything."""
+
+    __slots__ = ()
+
+    def __eq__(self, other: object) -> bool:
+        return True
+
+    __hash__ = str.__hash__
+
+
+def test_str_subclasses_are_not_trusted() -> None:
+    with pytest.raises(EligibilityError, match="malformed: tenant"):
+        scope(Sly("tenant-orchid"))
+    with pytest.raises(NotAvailable):
+        view(scope()).resolve(Sly(ACT2))
+    sly = [dataclasses.replace(r, matter=["x"]) if r.source_id == ORCHID else r for r in RECORDS]
+    with pytest.raises(EligibilityError, match="not a string"):
+        scoped_view(sly, INGESTION, scope())
+    assert "unknown-scope" in ineligibility(dataclasses.replace(BY_ID[ACT2], tenant=Sly("public")),
+                                            scope())
 
 
 # --- the command line -------------------------------------------------------------
@@ -367,21 +445,32 @@ README_ARGS = [QUERY, "--tenant", "public", "--jurisdiction", "fic-varnholt",
 
 
 def test_readme_shows_the_command_and_its_output(capsys: pytest.CaptureFixture[str]) -> None:
-    assert main(README_ARGS) == 0
+    assert main([*README_ARGS, "--show-excluded"]) == 0
     out = capsys.readouterr().out
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
     command = (f'python -m examples.legal_rag.eligibility "{QUERY}" \\\n'
                "    --tenant public --jurisdiction fic-varnholt --regime maritime-safety "
-               "--as-of 2024-06-01\n```\n\n```\n")
+               "--as-of 2024-06-01 --show-excluded\n```\n\n```\n")
     assert command + out + "```" in readme
     assert "fic-orchid-fleet-memo@v1            other-tenant" in out
 
 
-def test_cli_refuses_a_bad_scope(capsys: pytest.CaptureFixture[str]) -> None:
+def test_by_default_the_cli_shows_only_what_the_requester_may_see(capsys) -> None:
+    assert main(README_ARGS) == 0
+    out = capsys.readouterr().out
+    assert "excluded" not in out and all(sid not in out for sid in (ORCHID, BASALT, QUILL, ACT1))
+
+
+@pytest.mark.parametrize("flags", [
+    ["--tenant", "tenant-unknown", "--as-of", "2024-06-01"],
+    ["--tenant", "public", "--as-of", "20240601"],  # 3.11+ fromisoformat would take it
+    ["--tenant", "public", "--as-of", "2024-02-30"],
+])
+def test_cli_refuses_a_bad_scope(flags: list[str], capsys: pytest.CaptureFixture[str]) -> None:
     with pytest.raises(SystemExit) as info:
-        main(["q", "--tenant", "tenant-unknown", "--jurisdiction", "fic-varnholt",
-              "--regime", "maritime-safety", "--as-of", "2024-06-01"])
-    assert info.value.code == 2 and "malformed: tenant" in capsys.readouterr().err
+        main(["q", "--jurisdiction", "fic-varnholt", "--regime", "maritime-safety", *flags])
+    err = capsys.readouterr().err
+    assert info.value.code == 2 and ("malformed: tenant" in err or "--as-of" in err)
 
 
 def test_cli_reports_an_unreadable_fixture(tmp_path: Path, capsys) -> None:

@@ -486,10 +486,10 @@ True
 
 `examples/legal_rag/` is where a legal-style RAG example is being built on top
 of minirag, outside the 800-line core. So far it has its data, an ingestion
-step and scoped retrieval. The data is six records of original, fictional legal-like text. Each
-record carries a source ID and version, tenant/matter scope, jurisdiction and
-regime, effective dates, supersession, page spans, a licence, a content hash,
-and `"unknown"` wherever a fact is unknown. The
+step and scoped retrieval. The data is six records of original, fictional
+legal-like text. Each record carries a source ID and version, tenant/matter
+scope, jurisdiction and regime, effective dates, supersession, page spans, a
+licence, a content hash, and `"unknown"` wherever a fact is unknown. The
 [data card](examples/legal_rag/DATA_CARD.md) says where the text came from and
 what it cannot show.
 [`provenance.py`](examples/legal_rag/provenance.py) loads the records into
@@ -551,25 +551,25 @@ authenticated, never from the query text. A source is eligible only if the
 requester may read it (it is public, or it has the same tenant and, for a
 matter-scoped source, the same matter), its jurisdiction and regime are known
 and match, and it is known to be in force on the as-of date. `"unknown"` never
-matches. A scope with a missing or look-alike field is refused, and so is a
-matter that belongs to another tenant or a passage that no longer matches its
-record. The search index is then built from the eligible passages alone. The
-core engine's `where` filter runs after scoring, so other tenants' text would
-still shift the BM25 and TF-IDF statistics; a test shows that it does.
-Parent and citation lookups go through the same scoped view. An ID outside it
-gets one fixed "not available" answer, whether it belongs to someone else or
-does not exist.
+matches. A scope with a missing or look-alike field is refused. So is a matter
+that belongs to another tenant, and so is any passage that is not an exact,
+current slice of its record. The search index is then built from the eligible
+passages alone. The core engine's `where` filter runs after scoring, so other
+tenants' text would still shift the BM25 and TF-IDF statistics; a test shows
+that it does. Parent and citation lookups go through the same scoped view. An
+ID outside it gets one fixed "not available" answer, whether it belongs to
+someone else or does not exist.
 
 ```bash
 .venv/bin/python -m examples.legal_rag.eligibility "how often must a vessel pass a hull inspection" \
-    --tenant public --jurisdiction fic-varnholt --regime maritime-safety --as-of 2024-06-01
+    --tenant public --jurisdiction fic-varnholt --regime maritime-safety --as-of 2024-06-01 --show-excluded
 ```
 
 ```
-eligible: 2 of 6 sources
+eligible: 2 source(s)
   fic-harbour-inspection-guidance@v1
   fic-harbour-safety-act@v2
-excluded (operator view; a requester must not see this list):
+excluded: 4 of 6 (operator view; a requester must not see this list)
   fic-basalt-file-note@v1             other-tenant, unknown-jurisdiction, unknown-regime, unknown-in-force
   fic-harbour-safety-act@v1           no-longer-in-force
   fic-orchid-fleet-memo@v1            other-tenant
@@ -580,12 +580,15 @@ hybrid top 3:
   3. fic-harbour-safety-act@v2#s2:234-331           0.0317  '2. Records\nThe harbour master keeps e...'
 ```
 
-The excluded list is for whoever runs the example. A service must not show it
-to a requester, because it reveals that other tenants' sources exist. The rule
-and its reason names match the labels of
-[rag-eval-lab's legal-demo set](https://github.com/Bruhadev45/rag-eval-lab).
-Passing these isolation tests shows how the code behaves on this fixture; it is
-not an access-control audit, and it says nothing about legal accuracy.
+Without `--show-excluded` the command prints only what the requester may see.
+The excluded list is for whoever runs the example: it reveals that other
+tenants' sources exist. The reason names and their order match the labels of
+[rag-eval-lab's legal-demo set](https://github.com/Bruhadev45/rag-eval-lab),
+and the two rules agree on every case in it. This one is slightly stricter: it
+also treats look-alikes such as `"n/a"` as unknown, which only matters for
+values the fixture loader already rejects. Passing these isolation tests shows
+how the code behaves on this fixture. It is not an access-control audit, and
+it says nothing about legal accuracy.
 
 Nothing answers over these passages yet. The records are not law
 and not legal advice, and passing tests say nothing about legal accuracy. CI

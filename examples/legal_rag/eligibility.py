@@ -11,9 +11,10 @@ scores. So here eligibility comes first:
    as-of date) from what it has authenticated, never from the query text or
    model output. A scope with a missing, look-alike or contradictory field is
    refused with :class:`EligibilityError`.
-2. :func:`scoped_view` checks that the ingested passages match their source
-   records, then keeps only the sources :func:`ineligibility` passes. The
-   :class:`ScopedView` it returns holds nothing else.
+2. :func:`scoped_view` checks that every ingested passage is an exact, current
+   slice of the record it names, then keeps only the sources
+   :func:`ineligibility` passes. Only a :class:`ScopedView` that
+   :func:`scoped_view` returned is trusted; one built by hand is not checked.
 3. :func:`search` builds a fresh index from that view's passages alone, so
    ineligible text never takes a rank, a ``top_k`` slot or a share of corpus
    statistics. Each hit is checked against the view again on the way out.
@@ -24,11 +25,20 @@ scores. So here eligibility comes first:
 
 The rule is fail-closed. ``"unknown"`` never matches; a source with a matter
 suits only that matter; effective intervals are half-open, so a version is in
-force on its ``effective_from`` and not on its ``effective_to``. The reason
-names match rag-eval-lab's legal-demo labels. Error messages never echo IDs or
-field values. This shows the mechanics on fictional data; it is not an access
-control system, and it says nothing about whether any rule is legally right.
-Run ``python -m examples.legal_rag.eligibility --help``.
+force on its ``effective_from`` and not on its ``effective_to``. Reason names
+and their order match rag-eval-lab's legal-demo labels; this module is a little
+stricter, treating every loader look-alike (``"n/a"``, ``"tbd"``,
+``"tenant-unknown"`` ...) as unknown, which only matters for values the loader
+already rejects. A visible record's ``supersedes`` may name a version outside
+the view. Versions of a family share their scope, so that is never another
+tenant's source, and resolving it still fails.
+
+Error messages never echo IDs or field values. A corpus error (a stale passage,
+a matter with two tenants) refuses every request until it is fixed, and a scope
+error can reveal facts about other tenants' matters, so a service should keep
+both operator-side. This shows the mechanics on fictional data; it is not an
+access-control system, and it says nothing about whether any rule is legally
+right. Run ``python -m examples.legal_rag.eligibility --help``.
 """
 
 from __future__ import annotations
@@ -41,7 +51,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
 from types import MappingProxyType
-from typing import Final
+from typing import Final, get_args
 
 from examples.legal_rag.ingest import Child, Ingestion, Parent, ingest
 from examples.legal_rag.provenance import (
@@ -63,6 +73,8 @@ _PATTERNS: Final = {
     "jurisdiction": re.compile(rf"fic-{_SLUG}"),
     "regime": re.compile(_SLUG),
 }
+_ISO_DAY: Final = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
+MODES: Final = get_args(SearchMode)
 NOT_AVAILABLE: Final = "not available in this scope"
 
 
@@ -78,8 +90,8 @@ class NotAvailable(LookupError):
 
 
 def _known(value: object) -> bool:
-    """A usable value: a trimmed str that is no look-alike of "unknown", nor ends in one."""
-    if not isinstance(value, str) or value != value.strip() or value.lower() in LOOKALIKES:
+    """A usable value: a plain, trimmed str that is no look-alike of "unknown", nor ends in one."""
+    if type(value) is not str or value != value.strip() or value.lower() in LOOKALIKES:
         return False
     _, dash, rest = value.partition("-")
     return not (dash and rest.lower() in LOOKALIKES)
@@ -87,6 +99,10 @@ def _known(value: object) -> bool:
 
 def _day(value: object) -> bool:
     return isinstance(value, date) and not isinstance(value, datetime)
+
+
+def _field_ok(name: str, value: object) -> bool:
+    return _known(value) and len(value) <= MAX_ID and bool(_PATTERNS[name].fullmatch(value))
 
 
 @dataclass(frozen=True, slots=True)
@@ -100,29 +116,34 @@ class Scope:
     as_of: date
 
     def __post_init__(self) -> None:
-        fields = {"tenant": self.tenant, "jurisdiction": self.jurisdiction, "regime": self.regime}
-        if self.matter is not None:
-            fields["matter"] = self.matter
-        bad = [name for name, value in fields.items() if not (
-            _known(value) and len(value) <= MAX_ID and _PATTERNS[name].fullmatch(value))]
-        if not _day(self.as_of):
-            bad.append("as_of")
-        if bad:
-            names = ", ".join(bad)
-            raise EligibilityError(f"scope field(s) missing, unknown or malformed: {names}")
-        if self.tenant == PUBLIC and self.matter is not None:
-            raise EligibilityError("a public requester has no matter")
+        _check_scope(self)
+
+
+def _check_scope(scope: Scope) -> None:
+    """Raise :class:`EligibilityError` naming each bad field; run again by :func:`scoped_view`."""
+    fields = {"tenant": scope.tenant, "jurisdiction": scope.jurisdiction, "regime": scope.regime}
+    if scope.matter is not None:
+        fields["matter"] = scope.matter
+    bad = [name for name, value in fields.items() if not _field_ok(name, value)]
+    if not _day(scope.as_of):
+        bad.append("as_of")
+    if bad:
+        names = ", ".join(bad)
+        raise EligibilityError(f"scope field(s) missing, unknown or malformed: {names}")
+    if scope.tenant == PUBLIC and scope.matter is not None:
+        raise EligibilityError("a public requester has no matter")
 
 
 def ineligibility(record: SourceRecord, scope: Scope) -> tuple[str, ...]:
     """Every rule ``record`` fails for ``scope``; empty means eligible.
 
     Fails closed on its own, without trusting either constructor: a scope or
-    place field that is not :func:`_known` gives an ``unknown-*`` reason,
-    never a match.
+    place field that is not a plain, known string gives an ``unknown-*``
+    reason, never a match.
 
     Raises:
-        EligibilityError: A date is not a ``datetime.date`` or ``"unknown"``.
+        EligibilityError: A date is not a ``datetime.date`` or ``"unknown"``
+            (rag-eval-lab raises ``TypeError`` here).
     """
     start, end = record.effective_from, record.effective_to
     if not (_day(scope.as_of) and (_day(start) or start == UNKNOWN)
@@ -165,7 +186,7 @@ class ScopedView:
 
     def resolve(self, ref: object) -> SourceRecord | Parent | Child:
         """A cited source, parent or child ID, or :class:`NotAvailable`."""
-        if isinstance(ref, str):
+        if type(ref) is str:
             for table in (self.children, self.parents, self.sources):
                 if ref in table:
                     return table[ref]
@@ -181,28 +202,49 @@ class ScopedView:
 
 def _slice_ok(p: Parent | Child, records: Mapping[str, SourceRecord]) -> bool:
     """True if ``p`` is an exact, current slice of the record it names."""
-    record = records.get(p.source_id) if isinstance(p.source_id, str) else None
+    record = records.get(p.source_id) if type(p.source_id) is str else None
     return (record is not None and p.content_hash == record.content_hash
             and type(p.start) is int and type(p.end) is int
             and 0 <= p.start < p.end <= len(record.text)
             and p.text == record.text[p.start : p.end])
 
 
+def _parent_ok(p: Parent, records: Mapping[str, SourceRecord], kids: Sequence[str]) -> bool:
+    """A parent is its record's section, field for field, and lists exactly its children."""
+    if not _slice_ok(p, records):
+        return False
+    section = next((s for s in records[p.source_id].sections
+                    if s.section_id == p.section_id), None)
+    return (section is not None and p.parent_id == f"{p.source_id}#{p.section_id}"
+            and (section.heading, section.start, section.end, section.pages)
+            == (p.heading, p.start, p.end, p.pages)
+            and p.child_ids == tuple(kids))
+
+
+def _child_ok(c: Child, parent: Parent | None, records: Mapping[str, SourceRecord]) -> bool:
+    """A child lies inside a parent of its own source, under the ID its offsets give."""
+    return (parent is not None and _slice_ok(c, records)
+            and parent.source_id == c.source_id
+            and parent.start <= c.start and c.end <= parent.end
+            and c.chunk_id == f"{c.parent_id}:{c.start}-{c.end}"
+            and c.words == len(c.text.split()))
+
+
 def _bad_passages(records: Mapping[str, SourceRecord], ingestion: Ingestion) -> int:
-    """How many passages name no record, are stale, or have IDs that do not fit."""
+    """How many passages name no record, are stale, repeat, or have fields that do not fit."""
     parents = {p.parent_id: p for p in ingestion.parents
-               if isinstance(p, Parent) and isinstance(p.parent_id, str)}
-    bad = len(ingestion.parents) - len(parents)
-    for p in parents.values():
-        bad += not (_slice_ok(p, records) and p.parent_id == f"{p.source_id}#{p.section_id}")
-    for c in ingestion.children:
-        ok = isinstance(c, Child) and isinstance(c.parent_id, str)
-        parent = parents.get(c.parent_id) if ok else None
-        bad += not (parent is not None and _slice_ok(c, records)
-                    and parent.source_id == c.source_id
-                    and parent.start <= c.start and c.end <= parent.end
-                    and c.chunk_id == f"{c.parent_id}:{c.start}-{c.end}")
-    return bad
+               if isinstance(p, Parent) and type(p.parent_id) is str}
+    children = [c for c in ingestion.children if isinstance(c, Child)]
+    kids: dict[str, list[str]] = {}
+    for c in children:
+        if type(c.parent_id) is str:
+            kids.setdefault(c.parent_id, []).append(c.chunk_id)
+    bad = len(ingestion.parents) - len(parents) + len(ingestion.children) - len(children)
+    bad += sum(not _parent_ok(p, records, kids.get(pid, ())) for pid, p in parents.items())
+    bad += sum(not _child_ok(c, parents.get(c.parent_id) if type(c.parent_id) is str else None,
+                             records) for c in children)
+    ids = [c.chunk_id for c in children if type(c.chunk_id) is str]
+    return bad + len(ids) - len(set(ids))
 
 
 def scoped_view(records: Iterable[SourceRecord], ingestion: Ingestion, scope: Scope) -> ScopedView:
@@ -210,15 +252,19 @@ def scoped_view(records: Iterable[SourceRecord], ingestion: Ingestion, scope: Sc
 
     Raises:
         TypeError: If an argument has the wrong type.
-        EligibilityError: If two records share an ID, a matter has two tenants
-            or the scope's matter belongs to another tenant, any passage does
-            not match the record it names, or a date is malformed.
+        EligibilityError: If the scope is invalid, a record's ID or scope is
+            not a string, two records share an ID, a matter has two tenants or
+            the scope's matter belongs to another tenant, any passage does not
+            match the record it names, or a date is malformed.
     """
     records = tuple(records)
-    if not (isinstance(scope, Scope) and isinstance(ingestion, Ingestion)
+    if not (type(scope) is Scope and isinstance(ingestion, Ingestion)
             and all(isinstance(r, SourceRecord) for r in records)):
         raise TypeError("expected SourceRecords, an Ingestion and a Scope")
-    Scope.__post_init__(scope)  # re-check, in case the frozen fields were forced
+    _check_scope(scope)  # again, in case the frozen fields were forced
+    if not all(type(r.source_id) is str and type(r.tenant) is str
+               and (r.matter is None or type(r.matter) is str) for r in records):
+        raise EligibilityError("a record's source_id, tenant or matter is not a string")
     by_id = {r.source_id: r for r in records}
     if len(by_id) != len(records):
         raise EligibilityError("two records share a source_id")
@@ -256,16 +302,23 @@ def search(
 ) -> tuple[Retrieved, ...]:
     """Rank ``view``'s children for ``query`` with an index built from them alone.
 
-    The index is rebuilt on every call, which is fine for a fixture and
-    linear in the view's text; caching it per scope is a later step.
+    Arguments are checked before the view is looked at, so a bad call fails
+    the same way whether or not the scope has any passages. The index is
+    rebuilt on every call: linear in the view's text, fine for a fixture.
+    Caching it per scope, and limits on query size and ``top_k``, belong to the
+    later session and service steps.
 
     Raises:
         TypeError: If ``view`` is not a :class:`ScopedView`.
-        ValueError: From the core engine, for a bad ``top_k`` or ``mode``.
+        ValueError: If ``top_k`` is not an int of at least 1 or ``mode`` is unknown.
         EligibilityError: If a hit falls outside the view (an invariant breach).
     """
     if not isinstance(view, ScopedView):
         raise TypeError("search needs a ScopedView from scoped_view()")
+    if type(top_k) is not int or top_k < 1:
+        raise ValueError("top_k must be an int >= 1")
+    if mode not in MODES:
+        raise ValueError(f"unknown mode, expected one of {MODES}")
     if not view.children:
         return ()
     engine = MiniRAG()
@@ -282,8 +335,15 @@ def search(
 # --- the command line -----------------------------------------------------------
 
 
+def _iso_day(text: str) -> date:
+    """``YYYY-MM-DD`` only; newer Pythons' ``fromisoformat`` also takes other ISO forms."""
+    if not _ISO_DAY.fullmatch(text):
+        raise ValueError(text)
+    return date.fromisoformat(text)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
-    """Show which sources one scope may see, why the rest are out, and the top passages."""
+    """Show the top passages one scope may see; with ``--show-excluded``, what it may not."""
     parser = argparse.ArgumentParser(
         prog="python -m examples.legal_rag.eligibility",
         description="Search only the passages one requester's scope allows. The flags "
@@ -294,10 +354,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--matter", help="matter-... (omit for none)")
     parser.add_argument("--jurisdiction", required=True, help="fic-...")
     parser.add_argument("--regime", required=True)
-    parser.add_argument("--as-of", required=True, type=date.fromisoformat, help="YYYY-MM-DD")
-    parser.add_argument("--mode", choices=("bm25", "dense", "hybrid"), default="hybrid")
+    parser.add_argument("--as-of", required=True, type=_iso_day, help="YYYY-MM-DD")
+    parser.add_argument("--mode", choices=MODES, default="hybrid")
     parser.add_argument("--top-k", type=int, default=3)
     parser.add_argument("--fixture", type=Path, default=FIXTURE)
+    parser.add_argument("--show-excluded", action="store_true",
+                        help="operator view: also list every excluded source and why")
     args = parser.parse_args(argv)
     try:
         scope = Scope(args.tenant, args.matter, args.jurisdiction, args.regime, args.as_of)
@@ -309,13 +371,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 1
     except ValueError as exc:  # EligibilityError, or a bad --top-k
         parser.error(str(exc))
-    print(f"eligible: {len(view.sources)} of {len(records)} sources")
+    print(f"eligible: {len(view.sources)} source(s)")
     for sid in view.sources:
         print(f"  {sid}")
-    print("excluded (operator view; a requester must not see this list):")
-    for r in sorted(records, key=lambda r: r.source_id):
-        if r.source_id not in view.sources:
-            print(f"  {r.source_id:<36}{', '.join(ineligibility(r, scope))}")
+    if args.show_excluded:
+        print(f"excluded: {len(records) - len(view.sources)} of {len(records)} "
+              "(operator view; a requester must not see this list)")
+        for r in sorted(records, key=lambda r: r.source_id):
+            if r.source_id not in view.sources:
+                print(f"  {r.source_id:<36}{', '.join(ineligibility(r, scope))}")
     print(f"{args.mode} top {args.top_k}:")
     width = max((len(hit.child.chunk_id) for hit in hits), default=0)
     for i, hit in enumerate(hits, start=1):
