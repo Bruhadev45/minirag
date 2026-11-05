@@ -485,8 +485,8 @@ True
 ## Legal RAG example (being built)
 
 `examples/legal_rag/` is where a legal-style RAG example is being built on top
-of minirag, outside the 800-line core. So far it has its data and an ingestion
-step. The data is six records of original, fictional legal-like text. Each
+of minirag, outside the 800-line core. So far it has its data, an ingestion
+step and scoped retrieval. The data is six records of original, fictional legal-like text. Each
 record carries a source ID and version, tenant/matter scope, jurisdiction and
 regime, effective dates, supersession, page spans, a licence, a content hash,
 and `"unknown"` wherever a fact is unknown. The
@@ -544,7 +544,50 @@ sentences, so at the default 120 words each section is one passage;
 be at most half the limit. It only shows on longer sections, which the tests
 build and check.
 
-Nothing retrieves or answers over these passages yet. The records are not law
+[`eligibility.py`](examples/legal_rag/eligibility.py) decides what one
+request may see *before* anything is ranked. The server sets a `Scope`
+(tenant, matter, jurisdiction, regime and as-of date) from what it has
+authenticated, never from the query text. A source is eligible only if the
+requester may read it (it is public, or it has the same tenant and, for a
+matter-scoped source, the same matter), its jurisdiction and regime are known
+and match, and it is known to be in force on the as-of date. `"unknown"` never
+matches. A scope with a missing or look-alike field is refused, and so is a
+matter that belongs to another tenant or a passage that no longer matches its
+record. The search index is then built from the eligible passages alone. The
+core engine's `where` filter runs after scoring, so other tenants' text would
+still shift the BM25 and TF-IDF statistics; a test shows that it does.
+Parent and citation lookups go through the same scoped view. An ID outside it
+gets one fixed "not available" answer, whether it belongs to someone else or
+does not exist.
+
+```bash
+.venv/bin/python -m examples.legal_rag.eligibility "how often must a vessel pass a hull inspection" \
+    --tenant public --jurisdiction fic-varnholt --regime maritime-safety --as-of 2024-06-01
+```
+
+```
+eligible: 2 of 6 sources
+  fic-harbour-inspection-guidance@v1
+  fic-harbour-safety-act@v2
+excluded (operator view; a requester must not see this list):
+  fic-basalt-file-note@v1             other-tenant, unknown-jurisdiction, unknown-regime, unknown-in-force
+  fic-harbour-safety-act@v1           no-longer-in-force
+  fic-orchid-fleet-memo@v1            other-tenant
+  fic-quillmouth-port-code@v1         other-jurisdiction, unknown-in-force
+hybrid top 3:
+  1. fic-harbour-safety-act@v2#s1:94-232            0.0328  '1. Inspections\nA vessel longer than 2...'
+  2. fic-harbour-inspection-guidance@v1#s1:113-245  0.0323  '1. Small vessels\nThe Harbour Board tr...'
+  3. fic-harbour-safety-act@v2#s2:234-331           0.0317  '2. Records\nThe harbour master keeps e...'
+```
+
+The excluded list is for whoever runs the example. A service must not show it
+to a requester, because it reveals that other tenants' sources exist. The rule
+and its reason names match the labels of
+[rag-eval-lab's legal-demo set](https://github.com/Bruhadev45/rag-eval-lab).
+Passing these isolation tests shows how the code behaves on this fixture; it is
+not an access-control audit, and it says nothing about legal accuracy.
+
+Nothing answers over these passages yet. The records are not law
 and not legal advice, and passing tests say nothing about legal accuracy. CI
 runs `tests/legal_rag/`; the modules' own coverage floor and the lint of
 `examples/` run locally:

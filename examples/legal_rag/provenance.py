@@ -81,7 +81,7 @@ MAX_INT: Final = 10**9
 #: IDs, codes and labels stay this short, so a message that quotes one stays short.
 MAX_ID: Final = 80
 #: Spellings of "unknown" that would otherwise pass as real values (compared lowercased).
-_LOOKALIKES: Final = frozenset(
+LOOKALIKES: Final = frozenset(
     {"", "unknown", "n/a", "n-a", "na", "none", "null", "tbd", "unspecified"}
 )
 
@@ -219,13 +219,13 @@ def _string(
         out.append(f"{where}: expected a string, got {_show(value)}{null}")
     elif not _encodable(value):
         out.append(f"{where}: is not valid Unicode (it holds a lone surrogate)")
-    elif value.strip().lower() in _LOOKALIKES:
+    elif value.strip().lower() in LOOKALIKES:
         out.append(f"{where}: {_show(value)} is not a real value; {hint}")
     elif pattern is not None and not pattern.fullmatch(value):
         out.append(f"{where}: {_show(value)} does not match {pattern.pattern}")
     elif pattern is not None and len(value) > MAX_ID:
         out.append(f"{where}: {_show(value)} is longer than {MAX_ID} characters")
-    elif pattern in _PREFIXED and value.partition("-")[2] in _LOOKALIKES:
+    elif pattern in _PREFIXED and value.partition("-")[2] in LOOKALIKES:
         out.append(f"{where}: {_show(value)} is not a real value; {hint}")
     elif pattern is None and value != value.strip():
         out.append(f"{where}: {_show(value)} has leading or trailing whitespace")
