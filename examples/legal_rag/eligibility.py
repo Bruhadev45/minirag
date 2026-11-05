@@ -48,10 +48,10 @@ import re
 import sys
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date
 from pathlib import Path
 from types import MappingProxyType
-from typing import Final, get_args
+from typing import Final, TypeGuard, get_args
 
 from examples.legal_rag.ingest import Child, Ingestion, Parent, ingest
 from examples.legal_rag.provenance import (
@@ -89,7 +89,7 @@ class NotAvailable(LookupError):
         super().__init__(NOT_AVAILABLE)
 
 
-def _known(value: object) -> bool:
+def _known(value: object) -> TypeGuard[str]:
     """A usable value: a plain, trimmed str that is no look-alike of "unknown", nor ends in one."""
     if type(value) is not str or value != value.strip() or value.lower() in LOOKALIKES:
         return False
@@ -98,7 +98,8 @@ def _known(value: object) -> bool:
 
 
 def _day(value: object) -> bool:
-    return isinstance(value, date) and not isinstance(value, datetime)
+    """A plain ``date``: not a ``datetime``, nor a subclass that could redefine comparison."""
+    return type(value) is date
 
 
 def _field_ok(name: str, value: object) -> bool:
@@ -203,7 +204,8 @@ class ScopedView:
 def _slice_ok(p: Parent | Child, records: Mapping[str, SourceRecord]) -> bool:
     """True if ``p`` is an exact, current slice of the record it names."""
     record = records.get(p.source_id) if type(p.source_id) is str else None
-    return (record is not None and p.content_hash == record.content_hash
+    return (record is not None and type(p.text) is str and type(p.content_hash) is str
+            and p.content_hash == record.content_hash
             and type(p.start) is int and type(p.end) is int
             and 0 <= p.start < p.end <= len(record.text)
             and p.text == record.text[p.start : p.end])
@@ -215,7 +217,8 @@ def _parent_ok(p: Parent, records: Mapping[str, SourceRecord], kids: Sequence[st
         return False
     section = next((s for s in records[p.source_id].sections
                     if s.section_id == p.section_id), None)
-    return (section is not None and p.parent_id == f"{p.source_id}#{p.section_id}"
+    return (section is not None and type(p.heading) is str
+            and p.parent_id == f"{p.source_id}#{p.section_id}"
             and (section.heading, section.start, section.end, section.pages)
             == (p.heading, p.start, p.end, p.pages)
             and p.child_ids == tuple(kids))
@@ -227,7 +230,7 @@ def _child_ok(c: Child, parent: Parent | None, records: Mapping[str, SourceRecor
             and parent.source_id == c.source_id
             and parent.start <= c.start and c.end <= parent.end
             and c.chunk_id == f"{c.parent_id}:{c.start}-{c.end}"
-            and c.words == len(c.text.split()))
+            and c.words == len(c.text.split()))  # ingest counts words the same way
 
 
 def _bad_passages(records: Mapping[str, SourceRecord], ingestion: Ingestion) -> int:

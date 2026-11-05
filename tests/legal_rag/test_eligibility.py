@@ -436,6 +436,24 @@ def test_str_subclasses_are_not_trusted() -> None:
         scoped_view(sly, INGESTION, scope())
     assert "unknown-scope" in ineligibility(dataclasses.replace(BY_ID[ACT2], tenant=Sly("public")),
                                             scope())
+    for field in ("text", "content_hash"):  # a passage's value must be the record's own str
+        swapped = _swap(ACT2_CHILD, **{field: Sly(getattr(ACT2_CHILD, field))})
+        with pytest.raises(EligibilityError, match="1 passage"):
+            scoped_view(RECORDS, swapped, scope())
+    with pytest.raises(EligibilityError, match="1 passage"):
+        scoped_view(RECORDS, _parents(heading=Sly("1. Inspections")), scope())
+
+
+class LaterDay(date):
+    """A date subclass that could redefine comparison; the rule takes plain dates only."""
+
+
+def test_date_subclasses_are_not_trusted() -> None:
+    with pytest.raises(EligibilityError, match="malformed: as_of"):
+        scope(as_of=LaterDay(2024, 6, 1))
+    with pytest.raises(EligibilityError, match=r"datetime\.date"):
+        ineligibility(dataclasses.replace(BY_ID[ACT2], effective_from=LaterDay(2023, 7, 1)),
+                      scope())
 
 
 # --- the command line -------------------------------------------------------------
