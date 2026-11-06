@@ -8,15 +8,19 @@ be minirag's hashed TF-IDF or a learned model, and the result says which.
 - **Eligible candidates only.** Everything is built from a
   :class:`~examples.legal_rag.eligibility.ScopedView`'s passages: the BM25
   statistics, the hashed TF-IDF weights and the vectors. Every ID that can come
-  back was taken from the view. A hashed TF-IDF embedder must have been fitted
-  on exactly those passages, because its weights are corpus statistics: one
-  fitted on a wider corpus would carry other tenants' text into the scores, so
-  it is refused. A learned model embeds each text on its own, so one loaded
-  model can serve every scope.
+  back was taken from the view. Hashed TF-IDF weights are corpus statistics,
+  so they are always refitted here on exactly those passages; a hashed
+  embedder passed in only chooses the width, and one whose space shows a fit
+  on a wider corpus (other tenants' text) is refused. A ``learned`` embedder is
+  trusted to embed each text on its own, so one loaded model can serve every
+  scope; that is a property of the embedder that is assumed here, not checked.
 - **Raw text.** A learned model gets each passage's exact text and the query
   as typed. BM25 and hashed TF-IDF read the core tokeniser's tokens.
-- **Deterministic ties.** BM25 and dense ties break on chunk ID. Hybrid is the
-  core's weighted RRF, whose ties break on best rank, then BM25-first order.
+- **Deterministic ties.** BM25 and dense scores are rounded to
+  :data:`~extras.embed.SCORE_DECIMALS` decimals and ties break on chunk ID, so
+  float noise from summation order or hardware cannot reorder equal scores.
+  Hybrid is the core's weighted RRF over those two lists, whose ties break on
+  best rank, then BM25-first order.
 - **Labelled spaces.** The result carries the dense side's
   :class:`~extras.embed.Space`, so a hashed TF-IDF run is never reported as a
   semantic one.
@@ -48,6 +52,7 @@ from examples.legal_rag.eligibility import (
 from examples.legal_rag.ingest import ingest
 from examples.legal_rag.provenance import FIXTURE, ProvenanceError, load
 from extras.embed import (
+    SCORE_DECIMALS,
     HashedTfidfText,
     SentenceTransformerEmbedder,
     Space,
@@ -88,21 +93,34 @@ def _check(top_k: object, depth: object, weights: Mapping[str, float] | None) ->
         raise ValueError("top_k and depth must be ints with 1 <= top_k <= depth")
     weights = dict(weights if weights is not None else {"bm25": 1.0, "dense": 1.0})
     if not set(weights) <= set(RETRIEVERS) or not all(
-            type(w) in (int, float) and math.isfinite(w) and w >= 0 for w in weights.values()):
-        raise ValueError("weights map 'bm25'/'dense' to finite numbers >= 0")
+            type(w) in (int, float) and math.isfinite(w) and w > 0 for w in weights.values()):
+        raise ValueError("weights map 'bm25'/'dense' to finite numbers > 0")
     return weights
 
 
 def _embedder(given: TextEmbedder | None, texts: tuple[str, ...]) -> TextEmbedder:
-    """The dense side: the given embedder, or hashed TF-IDF fitted on ``texts`` alone."""
+    """The dense side. Hashed TF-IDF is always fitted here, on ``texts`` alone.
+
+    A hashed embedder passed in is never used for its weights, which could
+    have been forged or changed since its fit; it only sets the width.
+    """
     if given is None:
         return HashedTfidfText.fit(texts)
     space = getattr(given, "space", None)
     if type(space) is not Space:
         raise TypeError("the embedder must name its Space")
-    if space.kind == "hashed-tfidf" and space != HashedTfidfText.fit(texts, dim=space.dim).space:
+    if space.kind == "learned":
+        return given
+    own = HashedTfidfText.fit(texts, dim=space.dim)
+    if space != own.space:
         raise EligibilityError("a hashed TF-IDF embedder must be fitted on this scope's passages")
-    return given
+    return own
+
+
+def _ranked(pairs: Sequence[tuple[str, float]], depth: int) -> tuple[tuple[str, float], ...]:
+    """Round, then order by score and chunk ID: equal-up-to-noise scores tie on the ID."""
+    rounded = [(cid, round(float(score), SCORE_DECIMALS)) for cid, score in pairs]
+    return tuple(sorted(rounded, key=lambda pair: (-pair[1], pair[0]))[:depth])
 
 
 def compare(
@@ -117,7 +135,8 @@ def compare(
     Raises:
         TypeError: If ``view`` is not a :class:`ScopedView`, ``query`` is not a
             string, or the embedder names no :class:`~extras.embed.Space`.
-        ValueError: If ``top_k``/``depth``/``weights``/``rrf_k`` are invalid,
+        ValueError: If ``top_k``/``depth``/``weights``/``rrf_k`` are invalid
+            (weights must be positive: to drop a retriever, read its own list),
             or the embedder's output is malformed.
         EligibilityError: If a hashed TF-IDF embedder was fitted on other text.
     """
@@ -131,11 +150,12 @@ def compare(
     ids = tuple(sorted(view.children))
     texts = tuple(view.children[cid].text for cid in ids)
     embedder = _embedder(embedder, texts)
+    space = embedder.space
     if not ids or not query.strip():
-        return Baseline(embedder.space, (), (), ())
-    lexical = tuple((ids[i], score) for i, score in
-                    bm25.search(bm25.build_index([tokenize(t) for t in texts]),
-                                tokenize(query), top_k=depth))
+        return Baseline(space, (), (), ())
+    index = bm25.build_index([tokenize(t) for t in texts])
+    lexical = _ranked([(ids[i], score) for i, score in
+                       bm25.search(index, tokenize(query), top_k=len(ids))], depth)
     dense = VectorIndex.build(embedder, ids, texts).search(embedder, query, top_k=depth)
     ranks = {name: {cid: r for r, (cid, _) in enumerate(pairs, start=1)}
              for name, pairs in (("bm25", lexical), ("dense", dense))}
@@ -146,7 +166,7 @@ def compare(
         return tuple(Candidate(cid, float(score), ranks["bm25"].get(cid), ranks["dense"].get(cid))
                      for cid, score in pairs[:top_k])
 
-    return Baseline(embedder.space, rows(lexical), rows(dense), rows(fused))
+    return Baseline(space, rows(lexical), rows(dense), rows(fused))
 
 
 # --- the command line -----------------------------------------------------------
@@ -192,6 +212,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if (args.model is None) != (args.revision is None):
         parser.error("--model and --revision go together")
+    if not 1 <= args.top_k <= DEPTH:
+        parser.error(f"--top-k must be between 1 and {DEPTH}")
     try:
         scope = Scope(args.tenant, args.matter, args.jurisdiction, args.regime, args.as_of)
         records = load(args.fixture)
@@ -207,13 +229,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             embedder = SentenceTransformerEmbedder(
                 args.model, revision=args.revision, allow_download=args.allow_download,
                 device=args.device)
-        except (ImportError, OSError, ValueError) as exc:
-            print(f"cannot load model {args.model!r}: {exc}", file=sys.stderr)
+        except Exception as exc:  # the library's failures vary: OSError, ValueError, ...
+            print(f"cannot load model {args.model!r}: {type(exc).__name__}: {exc}",
+                  file=sys.stderr)
             return 1
     try:
         baseline = compare(view, args.query, embedder, top_k=args.top_k)
-    except ValueError as exc:  # a bad --top-k
-        parser.error(str(exc))
+    except (ValueError, RuntimeError, OSError) as exc:  # the flags are valid: the model failed
+        print(f"cannot rank: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 1
     _print(baseline, view, args.top_k)
     return 0
 

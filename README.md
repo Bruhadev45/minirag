@@ -486,21 +486,26 @@ True
   name the vector space they produce: kind, model, revision and width. A
   `VectorIndex` remembers the space it was built in. Searching it with an
   embedder from any other space raises `MixedSpaceError` instead of ranking
-  anything, even when the widths match. Two embedders share the `TextEmbedder`
-  protocol:
+  anything, even when the widths match. A space is what an embedder declares,
+  so this catches honest mistakes, not an embedder that lies about itself.
+  Cosines are rounded to 12 decimals before ties break on the ID, so float noise
+  cannot reorder equal scores. Two embedders share the `TextEmbedder` protocol:
   - `HashedTfidfText.fit(texts)` — the core's hashed TF-IDF, labelled
     `hashed-tfidf`: dense vectors that are lexical underneath, not a learned
     embedding. Its revision fingerprints the IDF weights it fitted, so fits
-    over different corpora are different spaces.
+    over different corpora are different spaces. The weights are rounded
+    before hashing, so float noise from another machine keeps the same name.
   - `SentenceTransformerEmbedder(model, revision=...)` — a sentence-transformers
     model, labelled `learned`. It needs the optional extra,
-    `pip install -e ".[embeddings]"` (sentence-transformers `>=5.0,<7`,
+    `pip install -e ".[embeddings]"` (sentence-transformers `>=6.0,<7`,
     Apache-2.0, which pulls in torch). It loads only files already in the local
     model cache unless you pass `allow_download=True`, never sets
     `trust_remote_code`, and gives the model each text exactly as written. A
     revision that is not a commit hash can move, so the space reports it as
-    unpinned. The tests drive it with a fake model: no learned model has been
-    downloaded, run or measured in this repo.
+    unpinned. A local model directory ignores the revision, so a commit hash is
+    refused for one. The space does not record library or torch versions, the
+    device or settings such as `max_seq_length`. The tests drive it with a fake
+    model: no learned model has been downloaded, run or measured in this repo.
 
 ```bash
 .venv/bin/pytest tests/test_embed.py -q
@@ -618,10 +623,12 @@ it says nothing about legal accuracy.
 three ways and prints them side by side: BM25, dense, and their RRF fusion.
 Each row also shows where both retrievers put that passage. BM25's statistics,
 the hashed TF-IDF weights and the vectors are all built from the scoped view's
-passages alone. A hashed TF-IDF embedder fitted on a wider corpus is refused,
-because its weights would carry other tenants' text. Ties follow fixed rules:
-BM25 and dense ties go by chunk ID, fusion ties by best rank and then BM25
-first. With the default hashed embedder the three lists match the core engine's
+passages alone. Hashed TF-IDF weights are always refitted on those passages,
+and an embedder passed in that was fitted on a wider corpus is refused, because
+its weights would carry other tenants' text. A learned model is trusted to embed
+each text on its own; that is assumed, not checked. Ties follow fixed rules:
+BM25 and dense scores are rounded to 12 decimals and ties go by chunk ID, and
+fusion ties go by best rank and then BM25 first. With the default hashed embedder the three lists match the core engine's
 three modes over the same passages, and a test checks that. The first line names
 the dense side's space, so a lexical run is never mistaken for a semantic one:
 
@@ -631,7 +638,7 @@ the dense side's space, so a lexical run is never mistaken for a semantic one:
 ```
 
 ```
-dense side: hashed TF-IDF (lexical, not a learned embedding): minirag.HashedTfidfEmbedder @ idf-a2967c3f5aef7ff7, 4096 dims
+dense side: hashed TF-IDF (lexical, not a learned embedding): minirag.HashedTfidfEmbedder @ idf-fd6e6eff8dfc9e7b, 4096 dims
 eligible: 2 source(s), 5 passage(s)
 bm25 top 3:
   1. fic-harbour-inspection-guidance@v1#s2:247-350  3.1121  (bm25 #1, dense #2)

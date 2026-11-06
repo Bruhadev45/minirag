@@ -13,6 +13,7 @@ import sys
 from datetime import date
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 from examples.legal_rag.baseline import DEPTH, Baseline, compare, main
@@ -87,9 +88,9 @@ def test_hashed_rankings_match_the_core_engine_mode_for_mode(name: str, query: s
     for mode in MODES:
         core = search(v, query, top_k=5, mode=mode)
         assert ids(getattr(baseline, mode)) == [r.child.chunk_id for r in core]
-        # Re-normalising unit rows can move the last bit of a cosine, nothing more.
+        # Scores are rounded to 12 decimals here, and not in the core.
         assert [r.score for r in getattr(baseline, mode)] == pytest.approx(
-            [r.score for r in core], rel=1e-12, abs=0)
+            [r.score for r in core], rel=0, abs=1e-12)
 
 
 def test_another_tenants_stuffed_record_moves_no_score_and_no_candidate(fake_st) -> None:
@@ -101,6 +102,27 @@ def test_another_tenants_stuffed_record_moves_no_score_and_no_candidate(fake_st)
     mallory = scoped_view(stuffed, ingest(stuffed), Scope(
         "tenant-mallory", None, "fic-varnholt", "maritime-safety", date(2024, 6, 1)))
     assert compare(mallory, QUERY, top_k=1).bm25[0].chunk_id.startswith("fic-mallory-memo@v1")
+
+
+def test_a_hashed_embedders_own_weights_are_never_used() -> None:
+    v = view("public")
+    own = HashedTfidfText.fit([v.children[cid].text for cid in sorted(v.children)])
+    wide = HashedTfidfText.fit([c.text for c in ingest(RECORDS).children])
+    with pytest.raises(ValueError, match="does not describe"):  # forged pairing
+        HashedTfidfText(own.space, wide.core)
+    with pytest.raises(ValueError, match="read-only"):
+        own.core.idf[:] = wide.core.idf
+    own.core.idf.flags.writeable = True  # a determined caller can still get there
+    own.core.idf[:] = wide.core.idf
+    assert compare(v, QUERY, own) == compare(v, QUERY)  # refitted on the scope regardless
+
+
+def test_bm25_scores_equal_up_to_float_noise_tie_on_chunk_id(monkeypatch) -> None:
+    v = view("public")
+    first, second = sorted(v.children)[:2]
+    monkeypatch.setattr("minirag.bm25.search", lambda index, tokens, top_k: (
+        (1, 2.0), (0, 2.0 - 4e-16)))
+    assert [(c.chunk_id, c.score) for c in compare(v, QUERY).bm25] == [(first, 2.0), (second, 2.0)]
 
 
 def test_a_hashed_embedder_fitted_beyond_the_scope_is_refused() -> None:
@@ -200,6 +222,7 @@ def test_a_scope_with_no_passages_returns_empty_lists_without_embedding(fake_st)
     ({"top_k": 0}, ValueError), ({"top_k": True}, ValueError), ({"top_k": 21}, ValueError),
     ({"top_k": 3, "depth": 2}, ValueError), ({"depth": 5.0}, ValueError),
     ({"weights": {"bm25": float("nan")}}, ValueError), ({"weights": {"dense": -1.0}}, ValueError),
+    ({"weights": {"dense": 0}}, ValueError),
     ({"weights": {"rerank": 1.0}}, ValueError), ({"weights": {"bm25": True}}, ValueError),
     ({"weights": {"bm25": "1"}}, ValueError), ({"rrf_k": 0}, ValueError),
     ({"rrf_k": 60.0}, ValueError),
@@ -260,7 +283,7 @@ def test_the_cli_prints_no_match_for_an_empty_ranking(capsys) -> None:
 
 
 @pytest.mark.parametrize("flags", [["--model", MODEL], ["--revision", COMMIT], ["--top-k", "0"],
-                                   ["--tenant", "tenant-unknown"]])
+                                   ["--top-k", "21"], ["--tenant", "tenant-unknown"]])
 def test_the_cli_refuses_bad_flags(flags: list[str], capsys) -> None:
     with pytest.raises(SystemExit) as info:
         main([*ARGS, *flags])
@@ -279,3 +302,18 @@ def test_the_cli_reports_a_missing_package_or_model(monkeypatch, fake_st, tmp_pa
     assert ".[embeddings]" in capsys.readouterr().err
     assert main([*ARGS, "--fixture", str(tmp_path / "missing.json")]) == 1
     assert "cannot load" in capsys.readouterr().err
+
+
+def test_the_cli_reports_a_model_that_fails_while_loading_or_ranking(monkeypatch, fake_st,
+                                                                    capsys) -> None:
+    def corrupt(self, *args, **kwargs):
+        raise RuntimeError("bad safetensors header")
+
+    monkeypatch.setattr(fake_st, "get_embedding_dimension", corrupt)
+    assert main([*ARGS, "--model", MODEL, "--revision", COMMIT]) == 1
+    assert "cannot load model" in capsys.readouterr().err
+    monkeypatch.setattr(fake_st, "get_embedding_dimension", lambda self: 16)
+    monkeypatch.setattr(fake_st, "_encode", lambda self, kind, texts, kw: [[np.nan] * 16] * len(
+        texts))
+    assert main([*ARGS, "--model", MODEL, "--revision", COMMIT]) == 1
+    assert "cannot rank: ValueError" in capsys.readouterr().err
