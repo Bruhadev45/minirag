@@ -482,11 +482,35 @@ True
 .venv/bin/pytest tests/test_persist.py -q
 ```
 
+- **[`extras/embed.py`](extras/embed.py)** — embedders that read raw text and
+  name the vector space they produce: kind, model, revision and width. A
+  `VectorIndex` remembers the space it was built in. Searching it with an
+  embedder from any other space raises `MixedSpaceError` instead of ranking
+  anything, even when the widths match. Two embedders share the `TextEmbedder`
+  protocol:
+  - `HashedTfidfText.fit(texts)` — the core's hashed TF-IDF, labelled
+    `hashed-tfidf`: dense vectors that are lexical underneath, not a learned
+    embedding. Its revision fingerprints the IDF weights it fitted, so fits
+    over different corpora are different spaces.
+  - `SentenceTransformerEmbedder(model, revision=...)` — a sentence-transformers
+    model, labelled `learned`. It needs the optional extra,
+    `pip install -e ".[embeddings]"` (sentence-transformers `>=5.0,<7`,
+    Apache-2.0, which pulls in torch). It loads only files already in the local
+    model cache unless you pass `allow_download=True`, never sets
+    `trust_remote_code`, and gives the model each text exactly as written. A
+    revision that is not a commit hash can move, so the space reports it as
+    unpinned. The tests drive it with a fake model: no learned model has been
+    downloaded, run or measured in this repo.
+
+```bash
+.venv/bin/pytest tests/test_embed.py -q
+```
+
 ## Legal RAG example (being built)
 
 `examples/legal_rag/` is where a legal-style RAG example is being built on top
 of minirag, outside the 800-line core. So far it has its data, an ingestion
-step and scoped retrieval. The data is six records of original, fictional
+step, scoped retrieval and a three-way retrieval baseline. The data is six records of original, fictional
 legal-like text. Each record carries a source ID and version, tenant/matter
 scope, jurisdiction and regime, effective dates, supersession, page spans, a
 licence, a content hash, and `"unknown"` wherever a fact is unknown. The
@@ -590,6 +614,56 @@ values the fixture loader already rejects. Passing these isolation tests shows
 how the code behaves on this fixture. It is not an access-control audit, and
 it says nothing about legal accuracy.
 
+[`baseline.py`](examples/legal_rag/baseline.py) ranks one scope's passages
+three ways and prints them side by side: BM25, dense, and their RRF fusion.
+Each row also shows where both retrievers put that passage. BM25's statistics,
+the hashed TF-IDF weights and the vectors are all built from the scoped view's
+passages alone. A hashed TF-IDF embedder fitted on a wider corpus is refused,
+because its weights would carry other tenants' text. Ties follow fixed rules:
+BM25 and dense ties go by chunk ID, fusion ties by best rank and then BM25
+first. With the default hashed embedder the three lists match the core engine's
+three modes over the same passages, and a test checks that. The first line names
+the dense side's space, so a lexical run is never mistaken for a semantic one:
+
+```bash
+.venv/bin/python -m examples.legal_rag.baseline "small vessels guidance status" \
+    --tenant public --jurisdiction fic-varnholt --regime maritime-safety --as-of 2024-06-01
+```
+
+```
+dense side: hashed TF-IDF (lexical, not a learned embedding): minirag.HashedTfidfEmbedder @ idf-a2967c3f5aef7ff7, 4096 dims
+eligible: 2 source(s), 5 passage(s)
+bm25 top 3:
+  1. fic-harbour-inspection-guidance@v1#s2:247-350  3.1121  (bm25 #1, dense #2)
+  2. fic-harbour-inspection-guidance@v1#s1:113-245  3.0400  (bm25 #2, dense #1)
+dense top 3:
+  1. fic-harbour-inspection-guidance@v1#s1:113-245  0.3548  (bm25 #2, dense #1)
+  2. fic-harbour-inspection-guidance@v1#s2:247-350  0.3189  (bm25 #1, dense #2)
+hybrid top 3:
+  1. fic-harbour-inspection-guidance@v1#s2:247-350  0.0325  (bm25 #1, dense #2)
+  2. fic-harbour-inspection-guidance@v1#s1:113-245  0.0325  (bm25 #2, dense #1)
+```
+
+BM25 and dense swap the guidance note's two sections, so RRF gives both exactly
+1/61 + 1/62. Each has a best rank of 1, so the BM25 list's order decides.
+
+With a learned model, the same command takes `--model` and a pinned
+`--revision` (below, the model's commit as of 2026-11-06):
+
+```bash
+.venv/bin/pip install -e ".[embeddings]"
+.venv/bin/python -m examples.legal_rag.baseline "small vessels guidance status" \
+    --tenant public --jurisdiction fic-varnholt --regime maritime-safety --as-of 2024-06-01 \
+    --model sentence-transformers/all-MiniLM-L6-v2 \
+    --revision 1110a243fdf4706b3f48f1d95db1a4f5529b4d41 --allow-download
+```
+
+That command has not been run for this README, and no model was downloaded for
+it. Without `--allow-download`, a model missing from the local cache fails to
+load instead of downloading. The tests run the learned path on a fake model, so
+they show the plumbing works and say nothing about retrieval quality. Comparing
+the modes on held-out queries is rag-eval-lab's job.
+
 Nothing answers over these passages yet. The records are not law
 and not legal advice, and passing tests say nothing about legal accuracy. CI
 runs `tests/legal_rag/`; the modules' own coverage floor and the lint of
@@ -604,11 +678,14 @@ runs `tests/legal_rag/`; the modules' own coverage floor and the lint of
 
 This is a teaching repository. It is correct, tested, and deliberately incomplete.
 
-- **The embeddings are not semantic.** `HashedTfidfEmbedder` builds a real dense
-  vector space arithmetically, so the whole dense path is exercised and testable —
-  but "car" and "automobile" hash to unrelated columns. It cannot match synonyms,
-  which is the entire selling point of a learned embedding model. Swap one in at
-  the `Embedder` protocol; nothing else changes.
+- **The default embeddings are not semantic.** `HashedTfidfEmbedder` builds a real
+  dense vector space arithmetically, so the whole dense path is exercised and
+  testable — but "car" and "automobile" hash to unrelated columns. It cannot match
+  synonyms, which is the entire selling point of a learned embedding model. The
+  core's `Embedder` protocol reads tokens, so a learned model plugs in outside it:
+  `extras/embed.py` has a sentence-transformers adapter that reads raw text, but it
+  has only run against a fake model in the tests. No learned embedding has been
+  run or measured in this repo.
 - **Hash collisions make dense mode over-eager.** Every term lands in *some*
   column, so an out-of-vocabulary query that BM25 correctly answers with nothing
   still scores ~0.09 against a few unrelated documents. Pinned by a test rather
