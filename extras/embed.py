@@ -63,8 +63,13 @@ LABELS: Final = {
 }
 HASHED_MODEL: Final = "minirag.HashedTfidfEmbedder"
 SCORE_DECIMALS: Final = 12
-"""Cosines are rounded to this many decimals, so floating-point noise cannot break a tie."""
+"""Cosines are rounded to this many decimals, so floating-point noise rarely breaks a tie.
+
+Two values that straddle a rounding boundary can still round apart, so ties
+are reproducible in practice, not in every last case."""
 _IDF_DECIMALS: Final = 9
+MAX_HASHED_DIM: Final = 2**20
+"""Widest hashed TF-IDF space :meth:`HashedTfidfText.fit` builds (8 MiB of IDF weights)."""
 _COMMIT: Final = re.compile(r"[0-9a-f]{40}")
 
 
@@ -108,7 +113,12 @@ class Space:
 
 @runtime_checkable
 class TextEmbedder(Protocol):
-    """Anything that embeds raw text into one named :class:`Space`."""
+    """Anything that embeds raw text into one named :class:`Space`.
+
+    A ``learned`` embedder is trusted to embed each text on its own. Only the
+    ``hashed-tfidf`` kind is fitted on a corpus, and only that kind's fit is
+    checked by callers that care where corpus statistics come from.
+    """
 
     @property
     def space(self) -> Space: ...
@@ -120,11 +130,6 @@ class TextEmbedder(Protocol):
     def embed_query(self, text: str) -> np.ndarray:
         """A ``(space.dim,)`` array; queries may be embedded unlike documents."""
         ...
-
-
-# A ``learned`` embedder is trusted to embed each text on its own. Only the
-# ``hashed-tfidf`` kind is fitted on a corpus, and only that kind's fit is
-# checked by callers that care where corpus statistics come from.
 
 
 def _strings(values: Sequence[str], name: str) -> tuple[str, ...]:
@@ -184,9 +189,13 @@ class HashedTfidfText:
 
     @classmethod
     def fit(cls, texts: Sequence[str], *, dim: int = DEFAULT_DIM) -> HashedTfidfText:
-        """Fit IDF weights on ``texts``; the space's revision fingerprints them."""
-        if type(dim) is not int:
-            raise ValueError("dim must be an int >= 1")
+        """Fit IDF weights on ``texts``; the space's revision fingerprints them.
+
+        Raises:
+            ValueError: If ``dim`` is not an int from 1 to :data:`MAX_HASHED_DIM`.
+        """
+        if type(dim) is not int or not 1 <= dim <= MAX_HASHED_DIM:
+            raise ValueError(f"dim must be an int from 1 to {MAX_HASHED_DIM}")
         tokens = [tokenize(t) for t in _strings(texts, "texts")]
         idf = HashedTfidfEmbedder.fit(tokens, dim=dim).idf.copy()
         idf.flags.writeable = False

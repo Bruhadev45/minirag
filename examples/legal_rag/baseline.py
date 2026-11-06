@@ -18,7 +18,7 @@ be minirag's hashed TF-IDF or a learned model, and the result says which.
   as typed. BM25 and hashed TF-IDF read the core tokeniser's tokens.
 - **Deterministic ties.** BM25 and dense scores are rounded to
   :data:`~extras.embed.SCORE_DECIMALS` decimals and ties break on chunk ID, so
-  float noise from summation order or hardware cannot reorder equal scores.
+  float noise from summation order or hardware rarely reorders equal scores.
   Hybrid is the core's weighted RRF over those two lists, whose ties break on
   best rank, then BM25-first order.
 - **Labelled spaces.** The result carries the dense side's

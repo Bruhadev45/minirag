@@ -134,6 +134,13 @@ def test_a_hashed_embedder_fitted_beyond_the_scope_is_refused() -> None:
     assert compare(v, QUERY, own) == compare(v, QUERY)
     narrower = HashedTfidfText.fit([v.children[cid].text for cid in sorted(v.children)], dim=512)
     assert compare(v, QUERY, narrower).space.dim == 512  # same texts, another width: allowed
+    huge = Space("hashed-tfidf", own.space.model, own.space.revision, 10**10)
+
+    class Claims:  # declares a width the refit would have to allocate
+        space = huge
+
+    with pytest.raises(ValueError, match="dim must be an int from 1 to"):
+        compare(v, QUERY, Claims())  # type: ignore[arg-type]
 
 
 def test_one_learned_model_serves_each_scope_from_that_scopes_text_alone(fake_st) -> None:

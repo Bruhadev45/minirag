@@ -117,7 +117,7 @@ def test_hashed_tfidf_refuses_anything_but_strings(texts: object) -> None:
         HashedTfidfText.fit(texts)  # type: ignore[arg-type]
 
 
-@pytest.mark.parametrize("dim", [0, True, 2.5])
+@pytest.mark.parametrize("dim", [0, True, 2.5, 2**20 + 1, 10**10])
 def test_hashed_tfidf_refuses_a_bad_width(dim: object) -> None:
     with pytest.raises(ValueError):
         HashedTfidfText.fit(TEXTS, dim=dim)  # type: ignore[arg-type]

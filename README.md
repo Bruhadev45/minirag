@@ -489,7 +489,7 @@ True
   anything, even when the widths match. A space is what an embedder declares,
   so this catches honest mistakes, not an embedder that lies about itself.
   Cosines are rounded to 12 decimals before ties break on the ID, so float noise
-  cannot reorder equal scores. Two embedders share the `TextEmbedder` protocol:
+  rarely reorders equal scores. Two embedders share the `TextEmbedder` protocol:
   - `HashedTfidfText.fit(texts)` — the core's hashed TF-IDF, labelled
     `hashed-tfidf`: dense vectors that are lexical underneath, not a learned
     embedding. Its revision fingerprints the IDF weights it fitted, so fits
