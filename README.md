@@ -515,7 +515,7 @@ True
 
 `examples/legal_rag/` is where a legal-style RAG example is being built on top
 of minirag, outside the 800-line core. So far it has its data, an ingestion
-step, scoped retrieval and a three-way retrieval baseline. The data is six records of original, fictional
+step, scoped retrieval, a three-way retrieval baseline and context packing. The data is six records of original, fictional
 legal-like text. Each record carries a source ID and version, tenant/matter
 scope, jurisdiction and regime, effective dates, supersession, page spans, a
 licence, a content hash, and `"unknown"` wherever a fact is unknown. The
@@ -670,6 +670,57 @@ it. Without `--allow-download`, a model missing from the local cache fails to
 load instead of downloading. The tests run the learned path on a fake model, so
 they show the plumbing works and say nothing about retrieval quality. Comparing
 the modes on held-out queries is rag-eval-lab's job.
+
+[`context.py`](examples/legal_rag/context.py) turns a ranking into the
+context a model would be shown. Each ranked passage is expanded to its whole
+section through the same scoped view. A ranked ID the view cannot show (another
+tenant's passage, a superseded version, or a section or source missing from the
+view) fails the whole call, rather than being skipped. Children of one section
+collapse into that section. Passages with the same words from different sources
+or versions are never merged: each block keeps its own source version and
+content hash. At most `--max-per-family` sections (default 2) come from one
+instrument, so one long document cannot crowd out the rest. The context then
+has to fit a declared token budget, which covers the headers and separators
+too. A section that does not fit falls back to its ranked excerpts, and children
+that overlap are merged so no text appears twice. Every block is an exact slice
+`record.text[start:end]`. A block that still does not fit is left out whole, never
+cut, and listed with its reason: `over-budget` when it fits alone but not with
+the rest, `oversized` when it alone exceeds the budget, or `family-cap`.
+
+Token counts are estimates, `ceil(chars / 4)`, and every output says so; a real
+model tokenizer can count more. A counter that wraps a model's own tokenizer
+can be passed to `pack()` and is reported as exact. Here the split limits from
+above make the guidance note's second section two passages, and a 40-token
+budget shows each outcome:
+
+```bash
+.venv/bin/python -m examples.legal_rag.context \
+    "how does the guidance relate to the hull inspection rule in the Harbour Safety Act" \
+    --tenant public --jurisdiction fic-varnholt --regime maritime-safety --as-of 2024-06-01 \
+    --budget 40 --max-per-family 1 --max-words 12 --overlap-words 6
+```
+
+```
+eligible: 2 source(s), 6 passage(s); hybrid top 5: 5 hit(s)
+tokens: 33 of 40, estimated (estimate: ceil(chars / 4), not a model tokenizer)
+packed 1 block(s):
+  [1] excerpt  fic-harbour-inspection-guidance@v1#s2  chars 293-350, 33 tokens, rank #1
+omitted 4:
+  fic-harbour-inspection-guidance@v1#s2: over-budget, 30 tokens alone, rank #2
+  fic-harbour-inspection-guidance@v1#s1: family-cap, rank #3
+  fic-harbour-safety-act@v2#s1: oversized, 48 tokens alone, rank #4
+  fic-harbour-safety-act@v2#s2: over-budget, 38 tokens alone, rank #5
+context:
+[1] fic-harbour-inspection-guidance@v1 excerpt of s2, p. 1, chars 293-350
+It does not say how it relates to the Harbour Safety Act.
+```
+
+The section ranked first does not fit, so its best-ranked excerpt
+is packed instead. Its other excerpt would fit alone but not beside it. The
+guidance note's first section hits the cap of one section per family, and the
+act's inspection section alone is bigger than the whole budget. The numbered
+headers are for a model to cite. They are not a trust boundary, since evidence
+text could contain a line that looks like a header.
 
 Nothing answers over these passages yet. The records are not law
 and not legal advice, and passing tests say nothing about legal accuracy. CI
