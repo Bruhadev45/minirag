@@ -165,7 +165,11 @@ class Evidence:
 
 @dataclass(frozen=True, slots=True)
 class Omitted:
-    """Ranked evidence left out whole; ``tokens`` is its block alone (None for a family cap)."""
+    """Ranked evidence left out whole, with its :data:`Reason`.
+
+    ``tokens`` is its block rendered alone (an ``"overlaps-packed"`` passage
+    counts its own block too), or None for a ``"family-cap"``.
+    """
 
     parent_id: str
     chunk_ids: tuple[str, ...]
@@ -361,7 +365,7 @@ class _Packer:
 
 
 def pack(
-    view: ScopedView, ranked: Sequence[str], *, budget: int,
+    view: ScopedView, ranked: list[str] | tuple[str, ...], *, budget: int,
     counter: TokenCounter | None = None, max_per_family: int = MAX_PER_FAMILY,
 ) -> Packed:
     """Pack the sections around ``ranked`` (chunk IDs, best first) into ``budget`` tokens.
