@@ -12,13 +12,16 @@ import copy
 import dataclasses
 import json
 from datetime import date
+from itertools import pairwise
 from pathlib import Path
 from types import MappingProxyType
 
 import pytest
 
+from examples.legal_rag import context
 from examples.legal_rag.baseline import compare
 from examples.legal_rag.context import (
+    MAX_RANKED,
     SEPARATOR,
     CharEstimate,
     Evidence,
@@ -31,6 +34,7 @@ from examples.legal_rag.eligibility import (
     NOT_AVAILABLE,
     EligibilityError,
     NotAvailable,
+    Retrieved,
     Scope,
     ScopedView,
     scoped_view,
@@ -105,6 +109,14 @@ def long_view() -> ScopedView:
     return view(records=LONG, max_words=10, overlap_words=5)
 
 
+def excerpt_size(v: ScopedView, *chunk_ids: str) -> int:
+    """Characters in the first excerpt block over ``chunk_ids`` of the long code's first section."""
+    start = min(v.children[c].start for c in chunk_ids)
+    end = max(v.children[c].end for c in chunk_ids)
+    return len(Evidence(1, "excerpt", LONG_ID, "fic-long-code", 1, f"{LONG_ID}#s1", "s1", (1, 2),
+                        start, end, "", (), (), 0, v.sources[LONG_ID].text[start:end]).render())
+
+
 def kids(v: ScopedView, parent_id: str) -> list[str]:
     return list(v.parents[parent_id].child_ids)
 
@@ -118,6 +130,9 @@ def check(v: ScopedView, ids: list[str], packed: Packed, counter=None) -> None:
     assert packed.text == SEPARATOR.join(b.render() for b in packed.evidence)
     assert packed.tokens == counter.count(packed.text) <= packed.budget
     assert [b.ref for b in packed.evidence] == list(range(1, len(packed.evidence) + 1))
+    spans = sorted((b.source_id, b.start, b.end) for b in packed.evidence)
+    for (sid, _, end), (other, start, _) in pairwise(spans):
+        assert sid != other or end <= start  # no text is packed twice
     for b in packed.evidence:
         record = v.sources[b.source_id]
         assert b.text == record.text[b.start : b.end] == b.text.strip()
@@ -182,6 +197,41 @@ def test_overlapping_excerpts_merge_and_stay_exact() -> None:
     assert (merged.start, merged.end) == (c[k[1]].start, c[k[3]].end)
     assert merged.header() == f"[1] {LONG_ID} excerpt of s1, pp. 1-2, chars 109-206"
     assert all(k[0] not in b.chunk_ids or b.chunk_ids == (k[0],) for b in packed.evidence)
+
+
+def test_an_overlapping_run_that_does_not_fit_falls_back_to_its_best_passage() -> None:
+    v = long_view()
+    k = kids(v, f"{LONG_ID}#s1")
+    ids = [k[1], k[2]]  # they share a sentence
+    section_size = pack(v, ids, budget=1000, counter=Chars()).tokens
+    alone, merged_size = excerpt_size(v, k[1]), excerpt_size(v, k[1], k[2])
+    assert alone < merged_size < section_size
+    packed = pack(v, ids, budget=merged_size - 1, counter=Chars())
+    check(v, ids, packed, Chars())
+    assert [b.chunk_ids for b in packed.evidence] == [(k[1],)]
+    assert packed.omitted == (Omitted(f"{LONG_ID}#s1", (k[2],), (2,), "overlaps-packed",
+                                      packed.omitted[0].tokens),)
+
+
+def test_every_excerpt_is_tried_after_an_earlier_one_is_packed() -> None:
+    v = long_view()
+    k = kids(v, f"{LONG_ID}#s1")
+    section = pack(v, [k[0], k[6]], budget=1000, counter=Chars()).evidence[0]
+    packed = pack(v, [k[0], k[6]], budget=section.tokens - 1, counter=Chars())
+    check(v, [k[0], k[6]], packed, Chars())
+    assert [b.chunk_ids for b in packed.evidence] == [(k[0],), (k[6],)]
+    assert packed.omitted == ()
+
+
+def test_a_run_member_that_does_not_fit_alone_is_skipped_for_the_next() -> None:
+    v = long_view()
+    k = kids(v, f"{LONG_ID}#s1")
+    ids = [k[3], k[2]]  # overlapping; k[3] is a little longer than k[2]
+    assert excerpt_size(v, k[3]) > excerpt_size(v, k[2])
+    packed = pack(v, ids, budget=excerpt_size(v, k[2]), counter=Chars())
+    check(v, ids, packed, Chars())
+    assert [b.chunk_ids for b in packed.evidence] == [(k[2],)]
+    assert [(o.chunk_ids, o.reason) for o in packed.omitted] == [((k[3],), "oversized")]
 
 
 def test_side_by_side_excerpts_stay_separate_so_the_best_one_can_fit() -> None:
@@ -276,6 +326,18 @@ def test_the_family_cap_keeps_room_for_other_sources() -> None:
     assert packed.omitted == (Omitted(f"{ACT2}#s3", (ids[2],), (3,), "family-cap", None),)
     one = pack(v, ids, budget=1000, max_per_family=1)
     assert [o.reason for o in one.omitted] == ["family-cap", "family-cap"]
+
+
+def test_a_section_packed_as_excerpts_uses_one_family_slot() -> None:
+    v = long_view()
+    k1, k2 = kids(v, f"{LONG_ID}#s1"), kids(v, f"{LONG_ID}#s2")
+    ids = [k1[0], k1[6], k2[0]]
+    section = pack(v, ids[:2], budget=1000).evidence[0]
+    packed = pack(v, ids, budget=section.tokens - 1, max_per_family=1)
+    check(v, ids, packed)
+    assert {b.granularity for b in packed.evidence} == {"excerpt"}
+    assert {b.parent_id for b in packed.evidence} == {f"{LONG_ID}#s1"}
+    assert packed.omitted[-1] == Omitted(f"{LONG_ID}#s2", (k2[0],), (3,), "family-cap", None)
 
 
 def test_a_section_left_out_for_budget_does_not_use_the_family_cap() -> None:
@@ -386,14 +448,57 @@ def test_a_passage_that_does_not_match_its_record_fails_closed() -> None:
     ({"budget": 0}, ValueError), ({"budget": -1}, ValueError), ({"budget": True}, ValueError),
     ({"budget": 1.5}, ValueError), ({"budget": MAX_INT + 1}, ValueError),
     ({"max_per_family": 0}, ValueError), ({"max_per_family": None}, ValueError),
-    ({"counter": object()}, TypeError),
-    ({"counter": dataclasses.make_dataclass("C", [("label", str), ("exact", object)])(
-        "", False)}, TypeError),
+    ({"max_per_family": True}, ValueError), ({"counter": object()}, TypeError),
+    ({"counter": dataclasses.replace(CharEstimate(), chars_per_token=4)}, None),
 ])
-def test_bad_arguments_are_refused(kwargs: dict, error: type[Exception]) -> None:
+def test_bad_arguments_are_refused(kwargs: dict, error: type[Exception] | None) -> None:
     v = view()
+    if error is None:
+        pack(v, ranked(v), **{"budget": 100, **kwargs})
+        return
     with pytest.raises(error):
         pack(v, ranked(v), **{"budget": 100, **kwargs})
+
+
+class Counter:
+    def __init__(self, label: object = "test", exact: object = False, count: object = len):
+        self.label, self.exact = label, exact
+        if count is not None:
+            self.count = count
+
+
+@pytest.mark.parametrize("counter", [Counter(label=""), Counter(label=" "), Counter(label=b"x"),
+                                     Counter(exact=1), Counter(exact="no"), Counter(count=None),
+                                     Counter(count="len")])
+def test_each_counter_defect_is_refused_on_its_own(counter: Counter) -> None:
+    v = view()
+    with pytest.raises(TypeError, match="token counter"):
+        pack(v, ranked(v), budget=100, counter=counter)
+    assert pack(v, ranked(v), budget=100, counter=Counter()).counter == "test"
+
+
+class Shifty(Chars):
+    """Says a different label on every read, and counts more each time it is asked."""
+
+    def __init__(self) -> None:
+        self.reads = self.calls = 0
+
+    @property
+    def label(self) -> str:  # type: ignore[override]
+        self.reads += 1
+        return f"label {self.reads}"
+
+    def count(self, text: str) -> int:
+        self.calls += 1
+        return len(text) + self.calls
+
+
+def test_the_counter_is_read_once_and_the_reported_total_is_the_checked_one() -> None:
+    v = view()
+    shifty = Shifty()
+    packed = pack(v, ranked(v), budget=300, counter=shifty)
+    assert packed.counter == "label 1" and shifty.reads == 1
+    assert packed.tokens <= packed.budget and packed.evidence
 
 
 class Broken(Chars):
@@ -416,14 +521,27 @@ def test_bad_rankings_are_refused_without_echoing_ids() -> None:
     ids = ranked(v)
     with pytest.raises(TypeError):
         pack(object(), ids, budget=100)  # type: ignore[arg-type]
-    for shape in (ids[0], set(ids), iter(ids), None):
+    class Liar(list):
+        def __len__(self) -> int:
+            return 1
+
+    for shape in (ids[0], set(ids), iter(ids), None, bytearray(b"ab"), memoryview(b"ab"),
+                  Liar(ids), range(3)):
         with pytest.raises(TypeError):
             pack(v, shape, budget=100)  # type: ignore[arg-type]
     with pytest.raises(ValueError) as info:
         pack(v, [ids[0], ids[1], ids[0]], budget=100)
     assert str(info.value) == "ranked[2] repeats an earlier chunk ID"
-    with pytest.raises(ValueError, match="more IDs than the view"):
-        pack(v, ids * 3, budget=100)
+    with pytest.raises(ValueError, match="repeats"):
+        pack(v, tuple(ids * 3), budget=100)
+
+
+def test_a_ranking_longer_than_the_fixed_bound_is_refused_before_it_is_read() -> None:
+    v = view()
+    ok = ranked(v)[0]
+    pack(v, [ok], budget=100)
+    with pytest.raises(ValueError, match=f"at most {MAX_RANKED}"):
+        pack(v, ["no-such-passage"] * (MAX_RANKED + 1), budget=100)
 
 
 # --- the command line -------------------------------------------------------------
@@ -449,12 +567,23 @@ def test_readme_shows_the_command_and_its_output(capsys: pytest.CaptureFixture[s
 
 def test_the_cli_refuses_bad_flags_and_reports_a_missing_fixture(tmp_path, capsys) -> None:
     for flags in (["--budget", "0"], ["--tenant", "tenant-unknown"], ["--top-k", "0"],
-                  ["--max-per-family", "0"]):
+                  ["--max-per-family", "0"], ["--top-k", str(MAX_RANKED + 1)]):
         with pytest.raises(SystemExit) as info:
             main([*README_ARGS, *flags])
         assert info.value.code == 2
     assert main([*README_ARGS, "--fixture", str(tmp_path / "missing.json")]) == 1
     assert "cannot load" in capsys.readouterr().err
+
+
+def test_the_cli_reports_a_passage_outside_the_scope(monkeypatch, capsys) -> None:
+    orchid = next(c for c in ingest(RECORDS).children if c.source_id == ORCHID)
+    monkeypatch.setattr(context, "search", lambda *a, **k: (Retrieved(orchid, 1.0, "hybrid"),))
+    assert main(README_ARGS) == 1
+    assert capsys.readouterr().err == f"cannot pack: {NOT_AVAILABLE}\n"
+
+
+def test_the_cli_escapes_control_characters_but_keeps_newlines() -> None:
+    assert context._printable("a\x1b[31mb\tc\nd\u202e") == "a\\x1b[31mb\\tc\nd\\u202e"
 
 
 def test_the_cli_prints_none_when_nothing_is_omitted(capsys) -> None:

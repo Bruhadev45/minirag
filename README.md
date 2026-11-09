@@ -682,14 +682,18 @@ content hash. At most `--max-per-family` sections (default 2) come from one
 instrument, so one long document cannot crowd out the rest. The context then
 has to fit a declared token budget, which covers the headers and separators
 too. A section that does not fit falls back to its ranked excerpts, and children
-that overlap are merged so no text appears twice. Every block is an exact slice
-`record.text[start:end]`. A block that still does not fit is left out whole, never
-cut, and listed with its reason: `over-budget` when it fits alone but not with
-the rest, `oversized` when it alone exceeds the budget, or `family-cap`.
+that overlap are merged so no text appears twice. If a merged run still does not
+fit, its passages are tried one at a time, best first. Every block is an exact
+slice `record.text[start:end]`. A block that still does not fit is left out whole,
+never cut, and listed with its reason: `over-budget` when it fits alone but not
+with the rest, `oversized` when it alone exceeds the budget, `family-cap`, or
+`overlaps-packed` for a passage whose text is partly in a block already packed.
 
 Token counts are estimates, `ceil(chars / 4)`, and every output says so; a real
 model tokenizer can count more. A counter that wraps a model's own tokenizer
-can be passed to `pack()` and is reported as exact. Here the split limits from
+can be passed to `pack()` and is reported as exact; it is trusted server code,
+since it sees every evidence text. One call packs at most 100 ranked IDs, and
+each try re-counts the whole context, which matters only for a slow tokenizer. Here the split limits from
 above make the guidance note's second section two passages, and a 40-token
 budget shows each outcome:
 

@@ -25,7 +25,9 @@ evidence blocks that fits a declared token budget:
   listed in :attr:`Packed.omitted` with its reason: ``"over-budget"`` (it fits
   on its own but not with what is already packed) or ``"oversized"`` (it alone
   exceeds the budget). A section that does not fit falls back to its ranked
-  excerpts before it is left out.
+  excerpts, and an overlapping run of excerpts that does not fit falls back
+  to its passages one by one, best first; a passage that would repeat text
+  already packed is listed as ``"overlaps-packed"``.
 - **Source diversity.** At most ``max_per_family`` sections of one source
   family (every version of one instrument) are packed; later ones are listed as
   ``"family-cap"``, so one long document cannot crowd out every other source.
@@ -34,12 +36,21 @@ evidence blocks that fits a declared token budget:
   string that is returned. Counting is done by a :class:`TokenCounter`. The
   default :class:`CharEstimate` is ``ceil(chars / 4)``: an estimate, labelled
   as one, which a real model tokenizer can exceed. Only a counter that wraps a
-  model's own tokenizer should say ``exact=True``.
+  model's own tokenizer should say ``exact=True``. A counter is trusted server
+  code: it sees every evidence text and is assumed deterministic, never
+  counting a longer string as fewer tokens.
+- **Bounded work.** At most :data:`MAX_RANKED` IDs are packed per call, and
+  only a ``list`` or ``tuple`` is read. Each try re-counts the whole context,
+  so a call costs up to a few hundred counts of at most ``budget`` tokens:
+  cheap for the estimate, worth knowing for a slow model tokenizer.
 
-Blocks follow the ranking: block 1 holds the best-ranked passage. The rendered
-headers are for a model to cite by number; they are not a trust boundary, since
-evidence text can contain anything a header can. Run
-``python -m examples.legal_rag.context --help``.
+Sections are ordered by their best-ranked passage, so block 1 holds the
+best-ranked passage; a section also carries the lower-ranked passages it
+covers. The rendered headers are for a model to cite by number; they are not
+a trust boundary, since evidence text can contain anything a header can. Only
+a :class:`ScopedView` from :func:`scoped_view` is trusted: passages are
+re-checked against its records, but a hand-built view's records are not.
+Run ``python -m examples.legal_rag.context --help``.
 """
 
 from __future__ import annotations
@@ -49,7 +60,7 @@ import sys
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Final, Literal, Protocol
+from typing import Final, Literal, Protocol, cast
 
 from examples.legal_rag.eligibility import (
     MODES,
@@ -74,9 +85,11 @@ from examples.legal_rag.provenance import (
 )
 
 MAX_PER_FAMILY: Final = 2
+MAX_RANKED: Final = 100
+"""The most ranked IDs one call packs; a fixed bound that says nothing about any view."""
 SEPARATOR: Final = "\n\n"
 Granularity = Literal["section", "excerpt"]
-Reason = Literal["family-cap", "over-budget", "oversized"]
+Reason = Literal["family-cap", "over-budget", "oversized", "overlaps-packed"]
 
 
 class TokenCounter(Protocol):
@@ -115,7 +128,10 @@ class CharEstimate:
 
 @dataclass(frozen=True, slots=True)
 class Evidence:
-    """One numbered block: ``text == record.text[start:end]``, a section or an excerpt of it."""
+    """One numbered block: ``text == record.text[start:end]``, a section or an excerpt of it.
+
+    An ``"excerpt"`` is packed only when its whole section did not fit.
+    """
 
     ref: int
     granularity: Granularity
@@ -187,13 +203,14 @@ def _positive(name: str, value: object) -> int:
     return value
 
 
-def _counter(given: object) -> TokenCounter:
+def _counter(given: object) -> tuple[TokenCounter, str, bool]:
+    """The counter with its ``label`` and ``exact``, each read once and checked."""
     counter = CharEstimate() if given is None else given
     label, exact = getattr(counter, "label", None), getattr(counter, "exact", None)
     if not (type(label) is str and label.strip() and type(exact) is bool
             and callable(getattr(counter, "count", None))):
         raise TypeError("a token counter needs a str label, a bool exact and a count method")
-    return counter  # type: ignore[return-value]
+    return cast(TokenCounter, counter), label, exact
 
 
 def _count(counter: TokenCounter, text: str) -> int:
@@ -215,7 +232,8 @@ def _resolve(view: ScopedView, chunk_id: object) -> tuple[Child, Parent, SourceR
     if not isinstance(record, SourceRecord):
         raise NotAvailable
     span = None
-    if (record.source_id == parent.source_id == child.source_id
+    if (child.chunk_id == chunk_id
+            and record.source_id == parent.source_id == child.source_id
             and parent.parent_id == child.parent_id
             and _slice_ok(parent, view.sources) and _slice_ok(child, view.sources)
             and parent.start <= child.start and child.end <= parent.end
@@ -263,13 +281,14 @@ def _excerpts(group: _Group) -> list[Excerpt]:
 
 
 class _Packer:
-    """Greedy packing in rank order; every fit is checked on the full rendered context."""
+    """Greedy packing in rank order; every fit is counted on the full rendered context."""
 
     def __init__(self, budget: int, counter: TokenCounter, max_per_family: int) -> None:
         self.budget, self.counter, self.max_per_family = budget, counter, max_per_family
         self.packed: list[Evidence] = []
         self.omitted: list[Omitted] = []
         self.per_family: dict[str, int] = {}
+        self.tokens = 0  # the count of the context as last accepted, i.e. as returned
 
     def block(self, group: _Group, granularity: Granularity, excerpt: Excerpt) -> Evidence:
         start, end, ranks, ids = excerpt
@@ -282,22 +301,20 @@ class _Packer:
             text=record.text[start:end])
         return replace(block, tokens=_count(self.counter, block.render()))
 
-    def fits(self, block: Evidence) -> bool:
-        rendered = SEPARATOR.join(b.render() for b in (*self.packed, block))
-        return _count(self.counter, rendered) <= self.budget
+    def try_pack(self, block: Evidence) -> bool:
+        """Pack ``block`` if the whole context, counted as it would be returned, fits."""
+        n = _count(self.counter, SEPARATOR.join(b.render() for b in (*self.packed, block)))
+        if n > self.budget:
+            return False
+        self.packed.append(block)
+        self.tokens = n
+        return True
 
-    def omit(self, block: Evidence) -> None:
-        reason: Reason = "oversized" if block.tokens > self.budget else "over-budget"
+    def omit(self, block: Evidence, reason: Reason | None = None) -> None:
+        if reason is None:
+            reason = "oversized" if block.tokens > self.budget else "over-budget"
         self.omitted.append(Omitted(block.parent_id, block.chunk_ids, block.ranks, reason,
                                     block.tokens))
-
-    def take(self, block: Evidence) -> bool:
-        """Pack ``block`` if the whole context still fits; otherwise list it as omitted."""
-        if self.fits(block):
-            self.packed.append(block)
-            return True
-        self.omit(block)
-        return False
 
     def add(self, group: _Group) -> None:
         """The whole section if it fits, else its ranked excerpts that fit, else nothing."""
@@ -309,16 +326,38 @@ class _Packer:
             return
         section = self.block(group, "section", (*group.span, ranks, ids))
         excerpts = [e for e in _excerpts(group) if e[:2] != group.span]
-        if self.fits(section):
-            self.packed.append(section)
+        if self.try_pack(section):
             took = True
         elif not excerpts:  # its one excerpt would be the section again
             self.omit(section)
             took = False
-        else:  # each block is built after the one before it was packed or left out
-            took = any([self.take(self.block(group, "excerpt", e)) for e in excerpts])
+        else:
+            took = False
+            for excerpt in excerpts:  # each block is numbered after the one before it
+                took = self.add_excerpt(group, excerpt) or took
         if took:
             self.per_family[family] = self.per_family.get(family, 0) + 1
+
+    def add_excerpt(self, group: _Group, excerpt: Excerpt) -> bool:
+        """One excerpt; an overlapping run that does not fit falls back to its passages."""
+        block = self.block(group, "excerpt", excerpt)
+        if self.try_pack(block):
+            return True
+        if len(excerpt[3]) == 1:
+            self.omit(block)
+            return False
+        children = {child.chunk_id: child for _, child in group.hits}
+        taken: list[Span] = []
+        for rank, chunk_id in zip(excerpt[2], excerpt[3], strict=True):  # best first
+            child = children[chunk_id]
+            one = self.block(group, "excerpt", (child.start, child.end, (rank,), (chunk_id,)))
+            if any(child.start < end and start < child.end for start, end in taken):
+                self.omit(one, "overlaps-packed")
+            elif self.try_pack(one):
+                taken.append((child.start, child.end))
+            else:
+                self.omit(one)
+        return bool(taken)
 
 
 def pack(
@@ -327,35 +366,38 @@ def pack(
 ) -> Packed:
     """Pack the sections around ``ranked`` (chunk IDs, best first) into ``budget`` tokens.
 
-    Any ranking of ``view``'s children works: :func:`~examples.legal_rag.eligibility.search`,
-    a baseline list, or a fused list from elsewhere. An empty ranking gives an
-    empty context.
+    Any ranking of ``view``'s own children works, up to :data:`MAX_RANKED`
+    IDs: :func:`~examples.legal_rag.eligibility.search`, a baseline list, or a
+    fused list from elsewhere. An empty ranking gives an empty context.
+    ``Packed.tokens`` is the count taken on the returned text when it was last
+    extended, so it never exceeds ``budget``.
 
     Raises:
         TypeError: If ``view`` is not a :class:`ScopedView`, ``ranked`` is not a
-            sequence, or ``counter`` lacks a ``label``, ``exact`` or ``count``.
+            list or tuple, or ``counter`` lacks a ``label``, ``exact`` or ``count``.
         ValueError: If ``budget`` or ``max_per_family`` is not an int from 1 to
-            :data:`~examples.legal_rag.provenance.MAX_INT`, ``ranked`` is longer
-            than the view's passages or repeats one, or the counter returns
+            :data:`~examples.legal_rag.provenance.MAX_INT`, ``ranked`` has more
+            than :data:`MAX_RANKED` IDs or repeats one, or the counter returns
             something other than an int >= 0.
-        NotAvailable: If a ranked ID, its section or its record is outside the view.
+        NotAvailable: If a ranked ID, its section or its record is outside the
+            view. This is checked before repeats, so a leak is never masked.
         EligibilityError: If a ranked passage is not an exact slice of its record.
     """
     if not isinstance(view, ScopedView):
         raise TypeError("pack needs a ScopedView from scoped_view()")
-    if isinstance(ranked, str | bytes) or not isinstance(ranked, Sequence):
-        raise TypeError("ranked must be a sequence of chunk IDs, best first")
+    if type(ranked) not in (list, tuple):  # their len() and iteration cannot disagree
+        raise TypeError("ranked must be a list or tuple of chunk IDs, best first")
     budget = _positive("budget", budget)
     max_per_family = _positive("max_per_family", max_per_family)
-    counter = _counter(counter)
-    if len(ranked) > len(view.children):
-        raise ValueError("ranked has more IDs than the view has passages")
+    counter, label, exact = _counter(counter)
+    if len(ranked) > MAX_RANKED:
+        raise ValueError(f"ranked may hold at most {MAX_RANKED} IDs")
     packer = _Packer(budget, counter, max_per_family)
     for group in _groups(view, ranked):
         packer.add(group)
     context = SEPARATOR.join(block.render() for block in packer.packed)
-    return Packed(budget, counter.label, counter.exact, _count(counter, context),
-                  tuple(packer.packed), tuple(packer.omitted), context)
+    return Packed(budget, label, exact, packer.tokens, tuple(packer.packed),
+                  tuple(packer.omitted), context)
 
 
 # --- the command line -----------------------------------------------------------
@@ -376,7 +418,12 @@ def _print(packed: Packed, view: ScopedView, hits: int, mode: str, top_k: int) -
         size = "" if o.tokens is None else f", {o.tokens} tokens alone"
         print(f"  {o.parent_id}: {o.reason}{size}, {_ranks(o.ranks)}")
     print("context:")
-    print(packed.text)
+    print(_printable(packed.text))
+
+
+def _printable(text: str) -> str:
+    """``text`` with control and other unprintable characters escaped, newlines kept."""
+    return "".join(c if c == "\n" or c.isprintable() else repr(c)[1:-1] for c in text)
 
 
 def _ranks(ranks: tuple[int, ...]) -> str:
@@ -405,6 +452,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--overlap-words", type=int, default=OVERLAP_WORDS)
     parser.add_argument("--fixture", type=Path, default=FIXTURE)
     args = parser.parse_args(argv)
+    if not 1 <= args.top_k <= MAX_RANKED:
+        parser.error(f"--top-k must be between 1 and {MAX_RANKED}")
     try:
         scope = Scope(args.tenant, args.matter, args.jurisdiction, args.regime, args.as_of)
         records = load(args.fixture)
@@ -415,6 +464,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                       max_per_family=args.max_per_family)
     except (OSError, UnicodeDecodeError, ProvenanceError) as exc:
         print(f"{args.fixture}: cannot load: {exc}", file=sys.stderr)
+        return 1
+    except NotAvailable as exc:  # search only returns the view's own passages
+        print(f"cannot pack: {exc}", file=sys.stderr)
         return 1
     except ValueError as exc:  # EligibilityError, or a bad limit
         parser.error(str(exc))
