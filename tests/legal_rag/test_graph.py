@@ -261,14 +261,15 @@ def test_every_section_reached_passes_the_eligibility_policy() -> None:
         v = view(s)
         seeds = [seed(v, pid) for pid in CITING if pid in v.parents]  # edges start here
         result = expand(v, EXTRA, seeds, max_hops=MAX_HOPS, max_candidates=MAX_CANDIDATES)
+        at = f"{year} {tenant} {matter}"
         reached = [item.parent.parent_id for item in result.sections]
-        assert len(reached) == len(set(reached))
+        assert len(reached) == len(set(reached)), at
         for item in result.sections:
-            assert v.parents[item.parent.parent_id] is item.parent
-            assert ineligibility(by_id[item.parent.source_id], s) == ()
-            assert [hop.to_id for hop in item.path][-1:] in ([], [item.parent.parent_id])
+            assert v.parents[item.parent.parent_id] is item.parent, at
+            assert ineligibility(by_id[item.parent.source_id], s) == (), at
+            assert [hop.to_id for hop in item.path][-1:] in ([], [item.parent.parent_id]), at
         assert len({item.parent.source_id for item in result.sections
-                    if item.parent.source_id.startswith(ACT)}) <= 1
+                    if item.parent.source_id.startswith(ACT)}) <= 1, at
         expanded += sum(item.hops > 0 for item in result.sections)
     assert expanded >= 20  # the walks really reached sections beyond their seeds
 

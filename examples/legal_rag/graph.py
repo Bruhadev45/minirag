@@ -245,7 +245,12 @@ def build_graph(records: Iterable[SourceRecord], raw: object) -> Graph:
 
 
 def load_graph(records: Iterable[SourceRecord], path: str | Path = REFERENCES) -> Graph:
-    """Read a references file and check it; ``OSError``/``UnicodeDecodeError`` if unreadable."""
+    """Read a references file and check it.
+
+    Raises :class:`ProvenanceError` for broken content or a file over
+    :data:`MAX_BYTES`, and ``OSError`` or ``UnicodeDecodeError`` if it cannot
+    be read as UTF-8.
+    """
     with Path(path).open("rb") as handle:
         data = handle.read(MAX_BYTES + 1)
     if len(data) > MAX_BYTES:
