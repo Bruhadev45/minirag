@@ -741,7 +741,7 @@ date puts in force. Every section reached comes from the same scoped view and is
 checked again by the same eligibility rules. An edge whose target the scope
 cannot see is not followed. It is counted, never named. Hops (at most 3) and
 added sections (at most 50) are capped. Each section is visited once, so cycles
-end, and the walk order is fixed:
+end, and the walk order is fixed. For example:
 
 ```bash
 .venv/bin/python -m examples.legal_rag.graph \
@@ -753,19 +753,22 @@ end, and the walk order is fixed:
 ```
 eligible: 2 source(s); hybrid top 1: 1 hit(s); up to 2 hop(s), 10 added section(s)
   hop 0  fic-harbour-inspection-guidance@v1#s2  seed fic-harbour-inspection-guidance@v1#s2:247-350
-  hop 1  fic-harbour-safety-act@v2#s1  reference "the Harbour Safety Act" at chars 327-349 of fic-harbour-inspection-guidance@v1#s2
-  hop 1  fic-harbour-safety-act@v2#s2  reference "the Harbour Safety Act" at chars 327-349 of fic-harbour-inspection-guidance@v1#s2
-  hop 1  fic-harbour-safety-act@v2#s3  reference "the Harbour Safety Act" at chars 327-349 of fic-harbour-inspection-guidance@v1#s2
-not followed: 1 edge(s) lead outside this scope
+  hop 1  fic-harbour-safety-act@v2#s1  reference from fic-harbour-inspection-guidance@v1#s2, source chars 327-349: "the Harbour Safety Act"
+  hop 1  fic-harbour-safety-act@v2#s2  reference from fic-harbour-inspection-guidance@v1#s2, source chars 327-349: "the Harbour Safety Act"
+  hop 1  fic-harbour-safety-act@v2#s3  reference from fic-harbour-inspection-guidance@v1#s2, source chars 327-349: "the Harbour Safety Act"
+not followed: 0 reference(s) and 1 supersession edge(s) lead outside this scope
 ```
 
 The guidance note names the act, so the act's sections in force on that date
-are added, each with the words that led there. The second hop tries the act's
-supersession edge to version 1, which is no longer in force, so it is not
-followed. A graph can never bring back a superseded version. The bundled file
-has one other reference, the Quillmouth code's "exempt from section 1". It is
-never followed, because that code's end date is unknown and an unknown date
-never passes the eligibility rules.
+are added, each with the words that led there and their offsets in the source
+text. The second hop tries the act's supersession edge to version 1, which is
+no longer in force, so it is not followed. Within one scope that is all a
+supersession edge can do: two valid versions of one instrument are never in
+force on the same day, so the edge is always refused and counted, and a graph
+can never bring back a superseded version. The bundled file has one other
+reference, the Quillmouth code's "exempt from section 1". It is never followed,
+because that code is never in any scope's view: its end date is unknown, and an
+unknown date never passes the eligibility rules.
 
 Nothing answers over these passages yet. The records are not law
 and not legal advice, and passing tests say nothing about legal accuracy. CI

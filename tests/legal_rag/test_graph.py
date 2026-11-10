@@ -38,7 +38,6 @@ from examples.legal_rag.graph import (
     Graph,
     Hop,
     Reached,
-    Reference,
     build_graph,
     expand,
     load_graph,
@@ -164,8 +163,11 @@ def test_the_top_level_must_be_an_object_and_records_must_be_records() -> None:
         build_graph(RECORDS, [])
     with pytest.raises(TypeError):
         build_graph([*RECORDS, "x"], RAW_REFS)  # type: ignore[list-item]
-    with pytest.raises(ProvenanceError, match="two share a source_id"):
-        build_graph([*RECORDS, RECORDS[0]], RAW_REFS)
+    with pytest.raises(ProvenanceError) as caught:
+        build_graph([*RECORDS, RECORDS[0]], {**RAW_REFS, "schema": "other"})
+    assert caught.value.problems == (
+        f"references file: expected schema {graph_module.SCHEMA!r} version 1",
+        "records: two share a source_id")
 
 
 def test_a_tenant_wide_source_cannot_name_one_matters_memo() -> None:
@@ -175,6 +177,13 @@ def test_a_tenant_wide_source_cannot_name_one_matters_memo() -> None:
                         records))
     with pytest.raises(ProvenanceError, match="narrower scope"):
         build_graph(records, raw)
+
+
+def test_every_version_of_a_named_family_is_checked_for_scope() -> None:
+    records = [dataclasses.replace(r, tenant="tenant-orchid") if r.source_id == ACT1 else r
+               for r in RECORDS]  # breaks the family rule, which only the loader enforces
+    with pytest.raises(ProvenanceError, match="narrower scope"):
+        build_graph(records, RAW_REFS)
 
 
 def test_a_private_source_may_name_a_public_one() -> None:
@@ -196,6 +205,15 @@ def test_unreadable_files(tmp_path: Path) -> None:
         load_graph(RECORDS, bad)
     with pytest.raises(OSError):
         load_graph(RECORDS, tmp_path / "missing.json")
+    bad.write_text("[" * 100_000, encoding="utf-8")
+    with pytest.raises(ProvenanceError, match="not valid JSON"):
+        load_graph(RECORDS, bad)
+    bad.write_bytes(b"\xff{}")
+    with pytest.raises(UnicodeDecodeError):
+        load_graph(RECORDS, bad)
+    bad.write_bytes(b" " * graph_module.MAX_BYTES + b"{}")
+    with pytest.raises(ProvenanceError, match="larger than"):
+        load_graph(RECORDS, bad)
 
 
 # --- expansion through the bundled edges ------------------------------------------
@@ -210,38 +228,49 @@ def test_a_reference_reaches_the_version_in_force_with_its_citing_words() -> Non
     assert result.sections[0] == Reached(v.parents[f"{GUIDANCE}#s2"], 0, (start,), ())
     assert result.sections[1].path == (
         Hop("reference", f"{GUIDANCE}#s2", f"{ACT2}#s1", "the Harbour Safety Act", 327, 349),)
-    assert (result.not_available, result.truncated) == (0, False)
+    assert (result.not_available, result.versions_not_available, result.truncated) == (0, 0,
+                                                                                       False)
 
 
 def test_supersession_never_brings_back_a_version_out_of_force() -> None:
     v = view()
     result = expand(v, GRAPH, [seed(v, f"{GUIDANCE}#s2")], max_hops=2)
     assert all(item.parent.source_id != ACT1 for item in result.sections)
-    assert result.not_available == 1  # v2 -> v1, counted once for all three sections
+    # v2 -> v1, counted once for all three sections, apart from references
+    assert (result.not_available, result.versions_not_available) == (0, 1)
     old = view(scope(date(2020, 6, 1)))
     result = expand(old, GRAPH, [seed(old, f"{ACT1}#s1")], max_hops=MAX_HOPS)
     assert ids(result) == [(0, f"{ACT1}#s1")]
-    assert result.not_available == 1  # v1 -> v2, not yet in force
+    assert (result.not_available, result.versions_not_available) == (0, 1)  # v2 not yet in force
 
 
-@pytest.mark.parametrize("year", range(2018, 2027))
-@pytest.mark.parametrize("tenant", [("public", None), ("tenant-orchid", "matter-orchid-001"),
-                                    ("tenant-basalt", None)])
-def test_every_section_reached_passes_the_eligibility_policy(year: int, tenant) -> None:
-    s = scope(date(year, 7, 1), tenant=tenant[0], matter=tenant[1])
-    v = view(s)
-    raw = refs_file(*RAW_REFS["references"], ref(f"{ORCHID}#s1", "hull inspections", ACT),
-                    ref(f"{ACT2}#s1", "hull inspection", f"{ACT}#s3"))
-    result = expand(v, build_graph(RECORDS, raw), sorted(v.children), max_hops=MAX_HOPS,
-                    max_candidates=MAX_CANDIDATES)
+EXTRA = build_graph(RECORDS, refs_file(
+    *RAW_REFS["references"], ref(f"{ORCHID}#s1", "hull inspections", ACT),
+    ref(f"{ACT2}#s1", "hull inspection", f"{ACT}#s3")))
+CITING = (f"{GUIDANCE}#s2", f"{ORCHID}#s1", f"{ACT1}#s1", f"{ACT2}#s1", f"{QUILL}#s2")
+SCOPES = [(year, tenant, matter) for year in range(2018, 2027)
+          for tenant, matter in [("public", None), ("tenant-orchid", "matter-orchid-001"),
+                                 ("tenant-orchid", None), ("tenant-basalt", None)]]
+
+
+def test_every_section_reached_passes_the_eligibility_policy() -> None:
     by_id = {r.source_id: r for r in RECORDS}
-    reached = [item.parent.parent_id for item in result.sections]
-    assert len(reached) == len(set(reached))
-    for item in result.sections:
-        assert item.parent.parent_id in v.parents
-        assert ineligibility(by_id[item.parent.source_id], s) == ()
-    assert len({item.parent.source_id for item in result.sections
-                if item.parent.source_id.startswith(ACT)}) <= 1
+    expanded = 0
+    for year, tenant, matter in SCOPES:
+        s = scope(date(year, 7, 1), tenant=tenant, matter=matter)
+        v = view(s)
+        seeds = [seed(v, pid) for pid in CITING if pid in v.parents]  # edges start here
+        result = expand(v, EXTRA, seeds, max_hops=MAX_HOPS, max_candidates=MAX_CANDIDATES)
+        reached = [item.parent.parent_id for item in result.sections]
+        assert len(reached) == len(set(reached))
+        for item in result.sections:
+            assert v.parents[item.parent.parent_id] is item.parent
+            assert ineligibility(by_id[item.parent.source_id], s) == ()
+            assert [hop.to_id for hop in item.path][-1:] in ([], [item.parent.parent_id])
+        assert len({item.parent.source_id for item in result.sections
+                    if item.parent.source_id.startswith(ACT)}) <= 1
+        expanded += sum(item.hops > 0 for item in result.sections)
+    assert expanded >= 20  # the walks really reached sections beyond their seeds
 
 
 def test_an_unknown_end_date_keeps_a_reference_closed_until_the_date_is_known() -> None:
@@ -266,6 +295,7 @@ def test_a_cycle_visits_each_section_once() -> None:
     v = view()
     result = expand(v, CYCLE, [seed(v, f"{ACT2}#s1")], max_hops=MAX_HOPS)
     assert ids(result) == [(0, f"{ACT2}#s1"), (1, f"{ACT2}#s3")]
+    assert result.versions_not_available == 1
     both = expand(v, CYCLE, [seed(v, f"{ACT2}#s3"), seed(v, f"{ACT2}#s1")], max_hops=MAX_HOPS)
     assert ids(both) == [(0, f"{ACT2}#s3"), (0, f"{ACT2}#s1")]
 
@@ -282,7 +312,7 @@ def test_paths_chain_hop_by_hop() -> None:
         (f"{GUIDANCE}#s2", f"{ACT2}#s3", "the Harbour Safety Act"),
         (f"{ACT2}#s3", f"{ACT2}#s1", "valid inspection")]
     assert all(a.to_id == b.from_id for a, b in pairwise(path))
-    assert result.not_available == 1  # v2's supersession edge, tried from both act sections
+    assert (result.not_available, result.versions_not_available) == (0, 1)  # tried from both
     short = expand(v, chain, [seed(v, f"{GUIDANCE}#s2")], max_hops=1)
     assert ids(short) == ids(result)[:2]
 
@@ -291,12 +321,21 @@ def test_hops_and_the_section_cap_bound_the_walk() -> None:
     v = view()
     start = [seed(v, f"{GUIDANCE}#s2")]
     assert ids(expand(v, GRAPH, start, max_hops=0)) == [(0, f"{GUIDANCE}#s2")]
-    assert expand(v, GRAPH, []) == Expansion((), 0, False, 1, 10)
+    assert expand(v, GRAPH, []) == Expansion((), 0, 0, False, 1, 10)
     capped = expand(v, GRAPH, start, max_candidates=2)
     assert (len(capped.sections), capped.truncated) == (3, True)
     exact = expand(v, GRAPH, start, max_candidates=3)
     assert (len(exact.sections), exact.truncated) == (4, False)
     assert (exact.max_hops, exact.max_candidates) == (1, 3)
+
+
+def test_seeds_in_one_section_share_its_entry_in_the_given_order() -> None:
+    v = scoped_view(RECORDS, ingest(RECORDS, max_words=12, overlap_words=6), scope())
+    kids = v.parents[f"{GUIDANCE}#s2"].child_ids
+    assert len(kids) == 2
+    result = expand(v, GRAPH, [kids[1], kids[0]], max_hops=0)
+    assert [(item.parent.parent_id, item.seeds) for item in result.sections] == [
+        (f"{GUIDANCE}#s2", (kids[1], kids[0]))]
 
 
 def test_the_result_ignores_record_and_file_order() -> None:
@@ -359,6 +398,36 @@ def test_a_forged_view_cannot_smuggle_a_superseded_version_through_the_graph() -
         expand(forged, GRAPH, [seed(old, f"{ACT1}#s1")], max_hops=0)  # a seed is checked too
 
 
+# Records that break the chain rule, built by hand: version 1 never ends, so both
+# versions are in force at once. The loader refuses this; it shows what the walk
+# would do if the eligibility policy ever passed two versions of one family.
+OVERLAP = tuple(dataclasses.replace(r, effective_to=None) if r.source_id == ACT1 else r
+                for r in RECORDS)
+
+
+def test_where_eligibility_allows_it_supersession_is_followed_in_version_order() -> None:
+    v = view(records=OVERLAP)
+    assert {ACT1, ACT2} <= set(v.sources)
+    both = build_graph(OVERLAP, RAW_REFS)
+    named = expand(v, both, [seed(v, f"{GUIDANCE}#s2")])
+    assert ids(named)[1:] == [(1, f"{ACT1}#s1"), (1, f"{ACT1}#s2"), (1, f"{ACT1}#s3"),
+                              (1, f"{ACT2}#s1"), (1, f"{ACT2}#s2"), (1, f"{ACT2}#s3")]
+    down = expand(v, both, [seed(v, f"{ACT2}#s1")])
+    assert ids(down)[1] == (1, f"{ACT1}#s1")
+    assert down.sections[1].path == (Hop("supersedes", f"{ACT2}#s1", f"{ACT1}#s1", None, None,
+                                         None),)
+    up = expand(v, both, [seed(v, f"{ACT1}#s3")])
+    assert up.sections[1].path[0].kind == "superseded-by"
+    assert (up.not_available, up.versions_not_available) == (0, 0)
+
+
+def test_a_hand_built_graph_may_repeat_a_version_and_each_edge_counts() -> None:
+    old = view(scope(date(2020, 6, 1)))
+    forked = Graph((), ((ACT2, ACT1), ("fic-harbour-safety-act@v3", ACT1)))
+    result = expand(old, forked, [seed(old, f"{ACT1}#s1")])
+    assert result.versions_not_available == 2
+
+
 def test_a_forged_section_is_refused() -> None:
     v = view()
     target = f"{ACT2}#s1"
@@ -393,12 +462,12 @@ def test_a_reference_moved_to_another_section_is_refused() -> None:
         expand(v, Graph((moved,), ()), [seed(v, f"{GUIDANCE}#s1")])
 
 
-def test_records_are_not_mutated() -> None:
-    before = copy.deepcopy(RECORDS)
+def test_inputs_are_not_mutated() -> None:
+    records, graph = copy.deepcopy(RECORDS), copy.deepcopy(EXTRA)
     v = view()
-    expand(v, GRAPH, sorted(v.children), max_hops=MAX_HOPS)
-    assert before == RECORDS
-    assert isinstance(GRAPH.references[0], Reference)
+    seeds = [seed(v, pid) for pid in CITING if pid in v.parents]
+    assert expand(v, EXTRA, seeds, max_hops=MAX_HOPS).sections[-1].hops > 0
+    assert (records, graph) == (RECORDS, EXTRA)
 
 
 # --- the command line -------------------------------------------------------------
@@ -422,9 +491,12 @@ def test_cli_lines(capsys: pytest.CaptureFixture[str]) -> None:
     assert main([*README_ARGS[:-1], "1", "--max-candidates", "1"]) == 0
     out = capsys.readouterr().out
     assert "stopped at the section cap" in out
+    parent = view(scope(date(2020, 6, 1))).parents[f"{ACT1}#s1"]
     hop = Hop("supersedes", f"{ACT2}#s1", f"{ACT1}#s1", None, None, None)
-    item = Reached(view(scope(date(2020, 6, 1))).parents[f"{ACT1}#s1"], 1, (), (hop,))
-    assert graph_module._line(item).endswith(f"supersedes from {ACT2}#s1")
+    assert graph_module._line(Reached(parent, 1, (), (hop,))).endswith(f"supersedes from {ACT2}#s1")
+    two_lines = Hop("reference", f"{GUIDANCE}#s2", f"{ACT1}#s1", "a\nhop 9  forged\x1b", 1, 2)
+    line = graph_module._line(Reached(parent, 1, (), (two_lines,)))
+    assert "\n" not in line and "\x1b" not in line and line.endswith('"a\\nhop 9  forged\\x1b"')
 
 
 @pytest.mark.parametrize("flags", [["--top-k", "0"], ["--max-hops", "9"], ["--tenant", "Public"],
@@ -440,6 +512,10 @@ def test_cli_reports_unreadable_files(tmp_path: Path, capsys: pytest.CaptureFixt
         missing = tmp_path / f"{flag[2:]}.json"
         assert main([*README_ARGS, flag, str(missing)]) == 1
         assert str(missing) in capsys.readouterr().err
+    broken = tmp_path / "broken.json"
+    broken.write_text(json.dumps({**RAW_REFS, "fictional": False}), encoding="utf-8")
+    assert main([*README_ARGS, "--references", str(broken)]) == 1
+    assert f"{broken}: cannot load: references file: 'fictional'" in capsys.readouterr().err
 
 
 def test_cli_reports_an_unavailable_seed(monkeypatch: pytest.MonkeyPatch,

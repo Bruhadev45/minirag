@@ -21,17 +21,20 @@ ranked passages and follows links from them, under three rules.
   the scope's as-of date puts in force, which need not be the one the citing
   text meant. Every section reached is read from the view and checked again
   with :func:`~examples.legal_rag.eligibility.ineligibility`, as seeds are. An
-  edge whose target the view does not hold is not followed;
-  :attr:`Expansion.not_available` counts such edges and never names them.
-  Versions of one family are never in force on the same day, so a supersession
-  edge always ends there: the graph cannot bring back a superseded version or
-  serve one that is not yet in force.
+  edge whose target the view does not hold is not followed, and it is counted,
+  never named: :attr:`Expansion.not_available` counts references (including one
+  whose named section is missing from the version in view), and
+  :attr:`Expansion.versions_not_available` counts supersession edges. Valid
+  versions of one family are never in force on the same day, so within one
+  view a supersession edge is always refused and only counted: the graph cannot
+  bring back a superseded version or serve one that is not yet in force.
 - **Bounded work.** At most :data:`MAX_HOPS` hops, :data:`MAX_CANDIDATES`
   added sections, :data:`MAX_SEEDS` seeds per call and :data:`MAX_REFERENCES`
-  references per file. Each section is visited once, so cycles end. The walk is
-  breadth-first in a fixed order (citing words by position, then supersession;
-  targets by version, then section), so the same inputs give the same result.
-  When the cap stops the walk, ``truncated`` is True.
+  references per file, read from at most :data:`MAX_BYTES` bytes. Each section
+  is visited once, so cycles end. The walk is breadth-first in a fixed order
+  (seeds as given; then citing words by position, then supersession; targets by
+  version, then section), so the same inputs give the same result. When the cap
+  stops the walk, ``truncated`` is True and the counts cover the walk so far.
 
 The loader also refuses a reference into a narrower scope: a public source
 naming a tenant's memo, or a tenant-wide source naming one matter's memo. So a
@@ -51,7 +54,7 @@ import sys
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Final, Literal
+from typing import Final, Literal
 
 from examples.legal_rag.context import MAX_RANKED, _printable
 from examples.legal_rag.eligibility import (
@@ -83,6 +86,7 @@ REFERENCES: Final = Path(__file__).parent / "fixtures" / "references.json"
 SCHEMA: Final = "minirag-legal-references"
 SCHEMA_VERSION: Final = 1
 MAX_REFERENCES: Final = 1000
+MAX_BYTES: Final = 1_000_000
 MAX_QUOTE: Final = 200
 MAX_HOPS: Final = 3
 MAX_CANDIDATES: Final = 50
@@ -92,6 +96,7 @@ EdgeKind = Literal["reference", "supersedes", "superseded-by"]
 _SLUG = r"[a-z0-9]+(?:-[a-z0-9]+)*"
 _FROM: Final = re.compile(rf"({_SLUG}@v[1-9][0-9]*)#(s[1-9][0-9]*)")
 _TO: Final = re.compile(rf"({_SLUG})(?:#(s[1-9][0-9]*))?")
+_Key = tuple[object, ...]  # identifies one edge, so each is counted once
 _TOP_KEYS: Final = frozenset({"schema", "schema_version", "fictional", "notice", "references"})
 _KEYS: Final = frozenset({"from", "start", "end", "quote", "to"})
 
@@ -145,7 +150,8 @@ class Expansion:
     """Seed sections first, then reached ones in walk order, and what was not followed."""
 
     sections: tuple[Reached, ...]
-    not_available: int  # distinct edges whose target is outside the view, until the walk stopped
+    not_available: int  # distinct references whose target is not in the view
+    versions_not_available: int  # distinct supersession edges whose version is not in the view
     truncated: bool  # the walk stopped at max_candidates
     max_hops: int
     max_candidates: int
@@ -187,9 +193,8 @@ def _reference(
     elif record is not None and origin is not None:
         if (target[1], target[2]) == (record.family_id, origin[2]):
             out.append(f"{where}: a section cannot reference itself")
-        owner = versions[0]  # every version of a family shares its scope
-        if not (owner.tenant == PUBLIC or (owner.tenant == record.tenant and (
-                owner.matter is None or owner.matter == record.matter))):
+        if not all(v.tenant == PUBLIC or (v.tenant == record.tenant and (
+                v.matter is None or v.matter == record.matter)) for v in versions):
             out.append(f"{where}: points into a narrower scope than the citing source")
     if len(out) > before or record is None or target is None:
         return None
@@ -218,11 +223,12 @@ def build_graph(records: Iterable[SourceRecord], raw: object) -> Graph:
         raise ProvenanceError(out)
     by_id = {r.source_id: r for r in records}
     if len(by_id) != len(records):
-        raise ProvenanceError(["records: two share a source_id"])
+        out.append("records: two share a source_id")
+        raise ProvenanceError(out)
     families: dict[str, list[SourceRecord]] = {}
     for r in sorted(records, key=lambda r: r.version):
         families.setdefault(r.family_id, []).append(r)
-    refs: dict[tuple[Any, ...], Reference] = {}
+    refs: dict[_Key, Reference] = {}
     for i, item in enumerate(items):
         ref = _reference(item, f"references[{i}]", by_id, families, out)
         key = None if ref is None else (ref.from_id, ref.start, ref.end, ref.family_id,
@@ -240,7 +246,11 @@ def build_graph(records: Iterable[SourceRecord], raw: object) -> Graph:
 
 def load_graph(records: Iterable[SourceRecord], path: str | Path = REFERENCES) -> Graph:
     """Read a references file and check it; ``OSError``/``UnicodeDecodeError`` if unreadable."""
-    text = Path(path).read_text(encoding="utf-8")
+    with Path(path).open("rb") as handle:
+        data = handle.read(MAX_BYTES + 1)
+    if len(data) > MAX_BYTES:
+        raise ProvenanceError([f"references file is larger than {MAX_BYTES} bytes"])
+    text = data.decode("utf-8")
     try:
         raw = json.loads(text, object_pairs_hook=_no_duplicate_keys)
     except ProvenanceError:
@@ -254,7 +264,10 @@ def load_graph(records: Iterable[SourceRecord], path: str | Path = REFERENCES) -
 
 
 def _admit(view: ScopedView, parent: object) -> Parent:
-    """``parent`` if the view holds it and the eligibility policy passes its record."""
+    """``parent`` if the view holds it and the eligibility policy passes its record.
+
+    Typed ``object``: it also checks what a hand-built view's ``parent_of`` returns.
+    """
     record = view.sources.get(parent.source_id) if isinstance(parent, Parent) \
         and type(parent.source_id) is str and type(parent.parent_id) is str else None
     if (record is None or not isinstance(parent, Parent)
@@ -265,7 +278,7 @@ def _admit(view: ScopedView, parent: object) -> Parent:
     return parent
 
 
-_Edge = tuple[tuple[Any, ...], EdgeKind, Reference | None, tuple[Parent, ...]]
+_Edge = tuple[_Key, EdgeKind, Reference | None, tuple[Parent, ...]]
 
 
 class _Edges:
@@ -276,8 +289,11 @@ class _Edges:
         self.refs: dict[str, list[Reference]] = {}
         for ref in graph.references:
             self.refs.setdefault(ref.from_id, []).append(ref)
-        self.older = dict(graph.supersessions)
-        self.newer = {old: new for new, old in graph.supersessions}
+        self.older: dict[str, list[str]] = {}
+        self.newer: dict[str, list[str]] = {}
+        for new, old in graph.supersessions:  # lists: a hand-built Graph may repeat a version
+            self.older.setdefault(new, []).append(old)
+            self.newer.setdefault(old, []).append(new)
         self.sections: dict[str, list[Parent]] = {}
         for p in sorted(view.parents.values(), key=lambda p: p.start):
             self.sections.setdefault(p.source_id, []).append(p)
@@ -286,6 +302,7 @@ class _Edges:
             self.versions.setdefault(r.family_id, []).append(r.source_id)
 
     def out(self, parent: Parent) -> Iterator[_Edge]:
+        """Each edge from ``parent``'s section with its targets in the view, maybe none."""
         record = self.view.sources[parent.source_id]
         for ref in self.refs.get(parent.parent_id, ()):
             if (ref.source_id, ref.content_hash) != (record.source_id, record.content_hash) \
@@ -297,19 +314,23 @@ class _Edges:
                             if ref.section_id in (None, p.section_id))
             key = ("reference", ref.from_id, ref.start, ref.end, ref.family_id, ref.section_id)
             yield key, "reference", ref, targets
-        for kind, other in (("supersedes", self.older), ("superseded-by", self.newer)):
-            sid = other.get(record.source_id)
-            if sid is not None:
-                targets = tuple(self.sections.get(sid, ())) if sid in self.view.sources else ()
-                yield (kind, record.source_id, sid), kind, None, targets
+        kinds: tuple[tuple[EdgeKind, dict[str, list[str]]], ...] = (
+            ("supersedes", self.older), ("superseded-by", self.newer))
+        for kind, other in kinds:
+            for sid in other.get(record.source_id, ()):
+                if sid in self.view.sources:  # a version the view holds is never counted
+                    yield (kind, record.source_id, sid), kind, None, tuple(
+                        self.sections.get(sid, ()))
+                else:
+                    yield (kind, record.source_id, sid), kind, None, ()
 
 
 def _walk(view: ScopedView, graph: Graph, found: dict[str, Reached], max_hops: int,
-          max_candidates: int) -> tuple[int, bool]:
-    """Breadth-first from ``found``'s seeds, adding to it; ``(not_available, truncated)``."""
+          max_candidates: int) -> tuple[set[_Key], bool]:
+    """Breadth-first from ``found``'s seeds, adding to it; ``(edges not followed, truncated)``."""
     edges = _Edges(view, graph)
     frontier = list(found.values())
-    blocked: set[tuple[Any, ...]] = set()
+    blocked: set[_Key] = set()
     added = 0
     for hops in range(1, max_hops + 1):
         reached: list[Reached] = []
@@ -321,7 +342,7 @@ def _walk(view: ScopedView, graph: Graph, found: dict[str, Reached], max_hops: i
                     if target.parent_id in found:  # a cycle, or reached another way first
                         continue
                     if added == max_candidates:
-                        return len(blocked), True
+                        return blocked, True
                     words = (None, None, None) if ref is None else (ref.quote, ref.start, ref.end)
                     hop = Hop(kind, here.parent.parent_id, target.parent_id, *words)
                     found[target.parent_id] = Reached(_admit(view, target), hops, (),
@@ -329,10 +350,11 @@ def _walk(view: ScopedView, graph: Graph, found: dict[str, Reached], max_hops: i
                     reached.append(found[target.parent_id])
                     added += 1
         frontier = reached
-    return len(blocked), False
+    return blocked, False
 
 
 def _bounded(name: str, value: object, low: int, high: int) -> int:
+    """``value`` if it is an int (not a bool) from ``low`` to ``high``, else ValueError."""
     if type(value) is not int or not low <= value <= high:
         raise ValueError(f"{name} must be an int from {low} to {high}")
     return value
@@ -372,8 +394,10 @@ def expand(
         prior = found.get(parent.parent_id)
         found[parent.parent_id] = Reached(parent, 0, (*(prior.seeds if prior else ()), chunk_id),
                                           ())
-    not_available, truncated = _walk(view, graph, found, max_hops, max_candidates)
-    return Expansion(tuple(found.values()), not_available, truncated, max_hops, max_candidates)
+    blocked, truncated = _walk(view, graph, found, max_hops, max_candidates)
+    references = sum(key[0] == "reference" for key in blocked)
+    return Expansion(tuple(found.values()), references, len(blocked) - references, truncated,
+                     max_hops, max_candidates)
 
 
 # --- the command line -------------------------------------------------------------
@@ -386,8 +410,9 @@ def _line(item: Reached) -> str:
     hop = item.path[-1]
     if hop.quote is None:
         return f"{where}  {hop.kind} from {hop.from_id}"
-    return (f'{where}  reference "{_printable(hop.quote)}" at chars {hop.start}-{hop.end} '
-            f"of {hop.from_id}")
+    quote = _printable(hop.quote).replace("\n", "\\n")  # one printed line per section
+    return (f"{where}  reference from {hop.from_id}, source chars {hop.start}-{hop.end}: "
+            f'"{quote}"')
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -419,6 +444,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         records = load(path)
         path = args.references
         graph = load_graph(records, path)
+        path = args.fixture  # ingest re-checks the records
         view = scoped_view(records, ingest(records), scope)
         hits = search(view, args.query, top_k=args.top_k, mode=args.mode)
         result = expand(view, graph, [hit.child.chunk_id for hit in hits],
@@ -436,7 +462,8 @@ def main(argv: Sequence[str] | None = None) -> int:
           f"{result.max_candidates} added section(s)")
     for item in result.sections:
         print(f"  {_line(item)}")
-    print(f"not followed: {result.not_available} edge(s) lead outside this scope"
+    print(f"not followed: {result.not_available} reference(s) and "
+          f"{result.versions_not_available} supersession edge(s) lead outside this scope"
           + ("; stopped at the section cap" if result.truncated else ""))
     return 0
 
