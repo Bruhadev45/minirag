@@ -515,7 +515,8 @@ True
 
 `examples/legal_rag/` is where a legal-style RAG example is being built on top
 of minirag, outside the 800-line core. So far it has its data, an ingestion
-step, scoped retrieval, a three-way retrieval baseline and context packing. The data is six records of original, fictional
+step, scoped retrieval, a three-way retrieval baseline, context packing and
+bounded graph expansion. The data is six records of original, fictional
 legal-like text. Each record carries a source ID and version, tenant/matter
 scope, jurisdiction and regime, effective dates, supersession, page spans, a
 licence, a content hash, and `"unknown"` wherever a fact is unknown. The
@@ -725,6 +726,46 @@ guidance note's first section hits the cap of one section per family, and the
 act's inspection section alone is bigger than the whole budget. The numbered
 headers are for a model to cite. They are not a trust boundary, since evidence
 text could contain a line that looks like a header.
+
+[`graph.py`](examples/legal_rag/graph.py) follows links from the sections
+around the hits, but only links written down in the fixtures. There are two
+kinds. A *reference* is an entry in
+[`fixtures/references.json`](examples/legal_rag/fixtures/references.json)
+saying that the words at given offsets of one section name an instrument or one
+of its sections; the loader checks that those exact words are there. A
+*supersession* edge is a record's own `supersedes` field, followed both ways.
+Nothing is inferred from similar wording, and an edge says only that the words
+name the target, nothing about which source prevails. A reference names an
+instrument, not a version, so it reaches whichever version the scope's as-of
+date puts in force. Every section reached comes from the same scoped view and is
+checked again by the same eligibility rules. An edge whose target the scope
+cannot see is not followed. It is counted, never named. Hops (at most 3) and
+added sections (at most 50) are capped. Each section is visited once, so cycles
+end, and the walk order is fixed:
+
+```bash
+.venv/bin/python -m examples.legal_rag.graph \
+    "how does the guidance note relate to the Harbour Safety Act" \
+    --tenant public --jurisdiction fic-varnholt --regime maritime-safety --as-of 2024-06-01 \
+    --top-k 1 --max-hops 2
+```
+
+```
+eligible: 2 source(s); hybrid top 1: 1 hit(s); up to 2 hop(s), 10 added section(s)
+  hop 0  fic-harbour-inspection-guidance@v1#s2  seed fic-harbour-inspection-guidance@v1#s2:247-350
+  hop 1  fic-harbour-safety-act@v2#s1  reference "the Harbour Safety Act" at chars 327-349 of fic-harbour-inspection-guidance@v1#s2
+  hop 1  fic-harbour-safety-act@v2#s2  reference "the Harbour Safety Act" at chars 327-349 of fic-harbour-inspection-guidance@v1#s2
+  hop 1  fic-harbour-safety-act@v2#s3  reference "the Harbour Safety Act" at chars 327-349 of fic-harbour-inspection-guidance@v1#s2
+not followed: 1 edge(s) lead outside this scope
+```
+
+The guidance note names the act, so the act's sections in force on that date
+are added, each with the words that led there. The second hop tries the act's
+supersession edge to version 1, which is no longer in force, so it is not
+followed. A graph can never bring back a superseded version. The bundled file
+has one other reference, the Quillmouth code's "exempt from section 1". It is
+never followed, because that code's end date is unknown and an unknown date
+never passes the eligibility rules.
 
 Nothing answers over these passages yet. The records are not law
 and not legal advice, and passing tests say nothing about legal accuracy. CI

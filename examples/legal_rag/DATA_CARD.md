@@ -73,6 +73,25 @@ Check the bundled file, or your own, from the repository root:
 6 valid records: 5 families, 3 tenant/matter scopes
 ```
 
+## Explicit references
+
+`fixtures/references.json` (schema `minirag-legal-references` version 1) lists
+the places where one fictional text names another source. It was written on
+2026-11-10 by reading the six texts. It is a separate file, so `sources.json`
+and its hashes stay unchanged. Each entry gives the citing section, the offsets
+and exact words of the mention, and the family (or family section) it names.
+
+| Citing words | In | Names | Followed? |
+| --- | --- | --- | --- |
+| "the Harbour Safety Act" | `fic-harbour-inspection-guidance@v1#s2` | `fic-harbour-safety-act` | Yes, to the version in force on the as-of date. |
+| "section 1" | `fic-quillmouth-port-code@v1#s2` | `fic-quillmouth-port-code#s1` | Never: that code's end date is unknown, so it is never eligible. |
+
+An entry records a mention, not a relationship. The guidance note names the
+act and says it does not say how the two relate, and the reference does not
+fill that gap. [`graph.py`](graph.py) checks the file against these records,
+refuses a mention into a narrower scope than its citing source, and adds the
+supersession edges from each record's own `supersedes` field.
+
 ## Limitations
 
 - **Six records exercise code paths. They cannot measure anything.** No
@@ -86,6 +105,6 @@ Check the bundled file, or your own, from the repository root:
 - **No precedence is encoded.** The fixture does not say whether a statute
   beats guidance, and nothing built on it should infer that.
 - **The layout is minimal.** Plain English text: no tables, footnotes,
-  schedules, amendments inside a text, or cross-references beyond the words of
-  the text itself. Page numbers only demonstrate the page-span fields.
+  schedules or amendments inside a text. The two cross-references are the
+  ones listed above. Page numbers only demonstrate the page-span fields.
 - **The hash is not a signature.** See above.
